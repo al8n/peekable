@@ -166,7 +166,6 @@ jobs:
       - clippy
       - build
       - test
-      - docs
     steps:
       - uses: actions/checkout@v3
       - name: Install latest nightly
