@@ -6,7 +6,6 @@ use std::marker::PhantomPinned;
 use std::marker::Unpin;
 use std::pin::Pin;
 use std::task::{Context, Poll};
-use tokio::io::AsyncReadExt;
 
 use super::AsyncPeekable;
 
@@ -45,6 +44,10 @@ pin_project! {
     }
 }
 
+fn eof() -> io::Error {
+  io::Error::new(io::ErrorKind::UnexpectedEof, "early eof")
+}
+
 impl<A> Future for PeekExact<'_, A>
 where
   A: AsyncRead + Unpin,
@@ -63,9 +66,23 @@ where
     }
 
     me.buf.put_slice(&me.reader.buffer);
+    let mut readed = me.reader.buffer.len();
 
-    let fut = me.reader.read_exact(me.buf.initialize_unfilled());
-    ::tokio::pin!(fut);
-    fut.poll(cx)
+    while me.buf.remaining() != 0 {
+      let before = me.buf.filled().len();
+      ready!(Pin::new(&mut me.reader.peeker).poll_read(cx, me.buf))?;
+      let after = me.buf.filled().len();
+      let n = after - before;
+      readed += n;
+      me.reader
+        .buffer
+        .extend_from_slice(&me.buf.filled()[before..after]);
+
+      if n == 0 && readed != buf_len {
+        return Err(eof()).into();
+      }
+    }
+
+    Poll::Ready(Ok(me.buf.capacity()))
   }
 }

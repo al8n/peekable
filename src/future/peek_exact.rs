@@ -1,9 +1,9 @@
-use futures_util::{AsyncRead, AsyncReadExt, FutureExt};
+use futures_util::AsyncRead;
 
 use super::AsyncPeekable;
 use std::{
   future::Future,
-  io,
+  io, mem,
   pin::Pin,
   task::{Context, Poll},
 };
@@ -39,8 +39,21 @@ impl<P: AsyncRead + Unpin> Future for PeekExact<'_, P> {
     }
 
     this.buf[..peek_buf_len].copy_from_slice(&this.peekable.buffer);
-    let mut fut = this.peekable.read_exact(&mut this.buf[peek_buf_len..]);
 
-    fut.poll_unpin(cx)
+    let mut readed = peek_buf_len;
+    while !this.buf.is_empty() {
+      let n = ready!(Pin::new(&mut this.peekable.reader).poll_read(cx, this.buf))?;
+      {
+        let (read, rest) = mem::take(&mut this.buf).split_at_mut(n);
+        this.peekable.buffer.extend_from_slice(read);
+        readed += n;
+        this.buf = rest;
+      }
+      if n == 0 && readed != buf_len {
+        return Poll::Ready(Err(io::ErrorKind::UnexpectedEof.into()));
+      }
+    }
+
+    Poll::Ready(Ok(()))
   }
 }

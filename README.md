@@ -3,7 +3,7 @@
 </div>
 <div align="center">
 
-WIP: Peakable reader and async reader
+Peakable reader and async reader
 
 [<img alt="github" src="https://img.shields.io/badge/github-al8n/peekable-8da0cb?style=for-the-badge&logo=Github" height="22">][Github-url]
 [<img alt="Build" src="https://img.shields.io/github/actions/workflow/status/al8n/peekable/ci.yml?logo=Github-Actions&style=for-the-badge" height="22">][CI-url]

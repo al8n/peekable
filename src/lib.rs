@@ -8,6 +8,7 @@
 use std::{
   cmp,
   io::{IoSliceMut, Read, Result},
+  mem,
 };
 
 #[cfg(feature = "smallvec")]
@@ -184,28 +185,48 @@ impl<R: Read> Peekable<R> {
   ///
   /// # Examples
   ///
-  /// [`File`]s implement `Read`:
   ///
   /// [`Ok(n)`]: Ok
   /// [`File`]: std::fs::File
   /// [`TcpStream`]: std::net::TcpStream
   ///
-  /// ```no_run
+  /// ```rust
   /// use std::io;
-  /// use std::io::prelude::*;
-  /// use std::fs::File;
+  /// use std::io::{Cursor, Read};
   /// use peekable::PeekExt;
   ///
-  /// fn main() -> io::Result<()> {
-  ///     let mut f = File::open("foo.txt")?.peekable();
-  ///     let mut buffer = [0; 10];
+  /// # fn main() -> io::Result<()> {
   ///
-  ///     // peek up to 10 bytes
-  ///     let n = f.peek(&mut buffer[..])?;
+  /// let mut peekable = Cursor::new([1, 2, 3, 4]).peekable();
+  /// let mut output = [0u8; 5];
   ///
-  ///     println!("The bytes: {:?}", &buffer[..n]);
-  ///     Ok(())
-  /// }
+  /// let bytes = peekable.peek(&mut output[..3])?;
+  ///
+  /// // This is only guaranteed to be 4 because `&[u8]` is a synchronous
+  /// // reader. In a real system you could get anywhere from 1 to
+  /// // `output.len()` bytes in a single read.
+  /// assert_eq!(bytes, 3);
+  /// assert_eq!(output, [1, 2, 3, 0, 0]);
+  ///
+  /// // you can peek mutiple times
+  ///
+  /// let bytes = peekable.peek(&mut output[..])?;
+  /// assert_eq!(bytes, 4);
+  /// assert_eq!(output, [1, 2, 3, 4, 0]);
+  ///
+  /// // you can read after peek
+  /// let mut output = [0u8; 5];
+  /// let bytes = peekable.read(&mut output[..2])?;
+  /// assert_eq!(bytes, 2);
+  /// assert_eq!(output, [1, 2, 0, 0, 0]);
+  ///
+  /// // peek after read
+  /// let mut output = [0u8; 5];
+  /// let bytes = peekable.peek(&mut output[..])?;
+  /// assert_eq!(bytes, 2);
+  /// assert_eq!(output, [3, 4, 0, 0, 0]);
+  /// # Ok(())
+  /// # }
   /// ```
   pub fn peek(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
     let want_peek = buf.len();
@@ -288,26 +309,32 @@ impl<R: Read> Peekable<R> {
   ///
   /// # Examples
   ///
-  /// [`File`]s implement `Peek`:
-  ///
-  /// [`peek()`]: Peek::peek
+  /// [`peek()`]: Peekable::peek
   /// [`Ok(0)`]: Ok
-  /// [`File`]: crate::fs::File
   ///
-  /// ```no_run
+  /// ```rust
   /// use std::io;
-  /// use std::io::prelude::*;
-  /// use std::fs::File;
+  /// use std::io::{Cursor, Read};
   /// use peekable::PeekExt;
   ///
-  /// fn main() -> io::Result<()> {
-  ///     let mut f = File::open("foo.txt")?.peekable();
-  ///     let mut buffer = Vec::new();
+  /// # fn main() -> io::Result<()> {
+  /// let mut peekable = Cursor::new([1, 2, 3, 4]).peekable();
+  /// let mut output = Vec::with_capacity(4);
   ///
-  ///     // peek the whole file
-  ///     f.peek_to_end(&mut buffer)?;
-  ///     Ok(())
-  /// }
+  /// let bytes = peekable.peek_to_end(&mut output)?;
+  ///
+  /// assert_eq!(bytes, 4);
+  /// assert_eq!(output, vec![1, 2, 3, 4]);
+  ///
+  /// // read after peek
+  /// let mut output = Vec::with_capacity(4);
+  ///
+  /// let bytes = peekable.read_to_end(&mut output)?;
+  ///
+  /// assert_eq!(bytes, 4);
+  /// assert_eq!(output, vec![1, 2, 3, 4]);
+  /// # Ok(())
+  /// # }
   /// ```
   pub fn peek_to_end(&mut self, buf: &mut Vec<u8>) -> Result<usize> {
     let this = &mut *self;
@@ -343,19 +370,29 @@ impl<R: Read> Peekable<R> {
   /// # Examples
   ///
   ///
-  /// ```no_run
+  /// ```rust
   /// use std::io;
-  /// use std::io::prelude::*;
-  /// use std::fs::File;
+  /// use std::io::{Cursor, Read};
   /// use peekable::PeekExt;
   ///
-  /// fn main() -> io::Result<()> {
-  ///     let mut f = File::open("foo.txt")?.peekable();
-  ///     let mut buffer = String::new();
+  /// # fn main() -> io::Result<()> {
   ///
-  ///     f.peek_to_string(&mut buffer)?;
-  ///     Ok(())
-  /// }
+  /// let mut peekable = Cursor::new(&b"1234"[..]).peekable();
+  /// let mut buffer = String::with_capacity(4);
+  ///
+  /// let bytes = peekable.peek_to_string(&mut buffer)?;
+  ///
+  /// assert_eq!(bytes, 4);
+  /// assert_eq!(buffer, String::from("1234"));
+  ///
+  /// // read after peek
+  /// let mut buffer = String::with_capacity(4);
+  /// let bytes = peekable.peek_to_string(&mut buffer)?;
+  ///
+  /// assert_eq!(bytes, 4);
+  /// assert_eq!(buffer, String::from("1234"));
+  /// # Ok(())
+  /// # }
   /// ```
   pub fn peek_to_string(&mut self, buf: &mut String) -> Result<usize> {
     let s = match core::str::from_utf8(&self.buffer) {
@@ -412,22 +449,62 @@ impl<R: Read> Peekable<R> {
   ///
   /// # Examples
   ///
-  /// ```no_run
+  /// ```rust
   /// use std::io;
-  /// use std::io::prelude::*;
-  /// use std::fs::File;
+  /// use std::io::{Cursor, Read};
   /// use peekable::PeekExt;
   ///
-  /// fn main() -> io::Result<()> {
-  ///     let mut f = File::open("foo.txt")?.peekable();
-  ///     let mut buffer = [0; 10];
+  /// # fn main() -> io::Result<()> {
   ///
-  ///     // peek exactly 10 bytes
-  ///     f.peek_exact(&mut buffer)?;
-  ///     Ok(())
-  /// }
+  /// let mut peekable = Cursor::new([1, 2, 3, 4]).peekable();
+  /// let mut output = [0u8; 4];
+  ///
+  /// peekable.peek_exact(&mut output)?;
+  ///
+  /// assert_eq!(output, [1, 2, 3, 4]);
+  ///
+  /// // read after peek
+  /// let mut output = [0u8; 2];
+  ///
+  /// peekable.read_exact(&mut output[..])?;
+  ///
+  /// assert_eq!(output, [1, 2]);
+  ///
+  /// // peek after read
+  /// let mut output = [0u8; 2];
+  /// peekable.peek_exact(&mut output)?;
+  ///
+  /// assert_eq!(output, [3, 4]);
+  /// # Ok(())
+  /// # }
   /// ```
-  pub fn peek_exact(&mut self, buf: &mut [u8]) -> Result<()> {
+  ///
+  /// ## EOF is hit before `buf` is filled
+  ///
+  /// ```
+  /// use std::io;
+  /// use std::io::{Cursor, Read};
+  /// use peekable::PeekExt;
+  ///
+  /// # fn main() -> io::Result<()> {
+  ///
+  /// let mut peekable = Cursor::new([1, 2, 3, 4]).peekable();
+  /// let mut output = [0u8; 5];
+  ///
+  /// let result = peekable.peek_exact(&mut output);
+  /// assert_eq!(
+  ///   result.unwrap_err().kind(),
+  ///   std::io::ErrorKind::UnexpectedEof
+  /// );
+  ///
+  /// let result = peekable.peek_exact(&mut output[..4]);
+  /// assert!(result.is_ok());
+  /// assert_eq!(output, [1, 2, 3, 4, 0]);
+  ///
+  /// # Ok(())
+  /// # }
+  /// ```
+  pub fn peek_exact(&mut self, mut buf: &mut [u8]) -> Result<()> {
     let this = self;
 
     let buf_len = buf.len();
@@ -438,8 +515,22 @@ impl<R: Read> Peekable<R> {
       return Ok(());
     }
 
-    buf[..buf_len].copy_from_slice(&this.buffer);
-    this.read_exact(buf)
+    buf[..peek_buf_len].copy_from_slice(&this.buffer);
+    let mut readed = peek_buf_len;
+    while !buf.is_empty() {
+      let n = this.peeker.read(buf)?;
+      {
+        let (read, rest) = mem::take(&mut buf).split_at_mut(n);
+        this.buffer.extend_from_slice(read);
+        readed += n;
+        buf = rest;
+      }
+      if n == 0 && readed != buf_len {
+        return Err(std::io::ErrorKind::UnexpectedEof.into());
+      }
+    }
+
+    Ok(())
   }
 }
 
