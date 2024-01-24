@@ -1,37 +1,34 @@
 [package]
-name = "template-rs"
-version = "0.1.6"
+name = "peekable"
+version = "0.0.0"
 edition = "2021"
-repository = "https://github.com/al8n/template-rs"
-homepage = "https://github.com/al8n/template-rs"
-documentation = "https://docs.rs/template-rs"
-description = "A template for creating Rust open-source repo on GitHub"
+repository = "https://github.com/al8n/peekable"
+homepage = "https://github.com/al8n/peekable"
+documentation = "https://docs.rs/peekable"
+description = "Peakable reader and async reader"
 license = "MIT/Apache-2.0"
-rust-version = "1.73"
-
-[[bench]]
-path = "benches/foo.rs"
-name = "foo"
-harness = false
+rust-version = "1.56"
 
 [features]
 default = []
+future = ["futures-util", "pin-project-lite"]
+tokio = ["dep:tokio", "pin-project-lite", "bytes"]
 
 [dependencies]
+smallvec = { version = "1", optional = true }
+
+# futures-io =  { version = "0.3", optional = true }
+futures-util = { version = "=0.3.29", optional = true, features = ["io"] }
+pin-project-lite = { version = "0.2", optional = true }
+
+tokio = { version = "1", default-features = false, optional = true, features = ["io-util"] }
+bytes = { version = "1", optional = true }
+
 
 [dev-dependencies]
-criterion = "0.5"
-tempfile = "3"
-
-[profile.bench]
-opt-level = 3
-debug = false
-codegen-units = 1
-lto = 'thin'
-incremental = false
-debug-assertions = false
-overflow-checks = false
-rpath = false
+futures = { version = "0.3", features = ["executor"] }
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["compat"] }
 
 [package.metadata.docs.rs]
 all-features = true
