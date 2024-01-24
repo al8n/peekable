@@ -15,33 +15,33 @@ use super::AsyncPeekable;
 /// Created by the [`AsyncPeekExt::peek_exact`][peek_exact].
 /// [peek_exact]: [super::AsyncPeekExt::peek_exact]
 pub(crate) fn peek_exact<'a, A>(
-  reader: &'a mut AsyncPeekable<A>,
+  peekable: &'a mut AsyncPeekable<A>,
   buf: &'a mut [u8],
 ) -> PeekExact<'a, A>
 where
   A: AsyncRead + Unpin,
 {
   PeekExact {
-    reader,
+    peekable,
     buf: ReadBuf::new(buf),
     _pin: PhantomPinned,
   }
 }
 
 pin_project! {
-    /// Creates a future which will read exactly enough bytes to fill `buf`,
-    /// returning an error if EOF is hit sooner.
-    ///
-    /// On success the number of bytes is returned
-    #[derive(Debug)]
-    #[must_use = "futures do nothing unless you `.await` or poll them"]
-    pub struct PeekExact<'a, A> {
-        reader: &'a mut AsyncPeekable<A>,
-        buf: ReadBuf<'a>,
-        // Make this future `!Unpin` for compatibility with async trait methods.
-        #[pin]
-        _pin: PhantomPinned,
-    }
+  /// Creates a future which will read exactly enough bytes to fill `buf`,
+  /// returning an error if EOF is hit sooner.
+  ///
+  /// On success the number of bytes is returned
+  #[derive(Debug)]
+  #[must_use = "futures do nothing unless you `.await` or poll them"]
+  pub struct PeekExact<'a, A> {
+    peekable: &'a mut AsyncPeekable<A>,
+    buf: ReadBuf<'a>,
+    // Make this future `!Unpin` for compatibility with async trait methods.
+    #[pin]
+    _pin: PhantomPinned,
+  }
 }
 
 fn eof() -> io::Error {
@@ -58,23 +58,23 @@ where
     let me = self.project();
 
     let buf_len = me.buf.remaining();
-    let peek_buf_len = me.reader.buffer.len();
+    let peek_buf_len = me.peekable.buffer.len();
 
     if buf_len <= peek_buf_len {
-      me.buf.put_slice(&me.reader.buffer[..buf_len]);
+      me.buf.put_slice(&me.peekable.buffer[..buf_len]);
       return Poll::Ready(Ok(buf_len));
     }
 
-    me.buf.put_slice(&me.reader.buffer);
-    let mut readed = me.reader.buffer.len();
+    me.buf.put_slice(&me.peekable.buffer);
+    let mut readed = me.peekable.buffer.len();
 
     while me.buf.remaining() != 0 {
       let before = me.buf.filled().len();
-      ready!(Pin::new(&mut me.reader.peeker).poll_read(cx, me.buf))?;
+      ready!(Pin::new(&mut me.peekable.reader).poll_read(cx, me.buf))?;
       let after = me.buf.filled().len();
       let n = after - before;
       readed += n;
-      me.reader
+      me.peekable
         .buffer
         .extend_from_slice(&me.buf.filled()[before..after]);
 

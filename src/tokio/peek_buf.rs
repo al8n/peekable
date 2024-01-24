@@ -24,15 +24,15 @@ where
 }
 
 pin_project! {
-    /// Future returned by [`peek_buf`](crate::io::AsyncReadExt::peek_buf).
-    #[derive(Debug)]
-    #[must_use = "futures do nothing unless you `.await` or poll them"]
-    pub struct PeekBuf<'a, R, B: ?Sized> {
-        peeker: &'a mut AsyncPeekable<R>,
-        buf: &'a mut B,
-        #[pin]
-        _pin: PhantomPinned,
-    }
+  /// Future returned by [`peek_buf`](crate::io::AsyncReadExt::peek_buf).
+  #[derive(Debug)]
+  #[must_use = "futures do nothing unless you `.await` or poll them"]
+  pub struct PeekBuf<'a, R, B: ?Sized> {
+    peeker: &'a mut AsyncPeekable<R>,
+    buf: &'a mut B,
+    #[pin]
+    _pin: PhantomPinned,
+  }
 }
 
 impl<R, B> Future for PeekBuf<'_, R, B>

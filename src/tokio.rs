@@ -115,15 +115,15 @@ pin_project_lite::pin_project! {
   #[derive(Debug)]
   pub struct AsyncPeekable<R> {
     #[pin]
-    peeker: R,
+    reader: R,
     buffer: Buffer,
   }
 }
 
 impl<R> From<R> for AsyncPeekable<R> {
-  fn from(peeker: R) -> Self {
+  fn from(reader: R) -> Self {
     Self {
-      peeker,
+      reader,
       buffer: Buffer::new(),
     }
   }
@@ -145,7 +145,7 @@ impl<R: AsyncRead> AsyncRead for AsyncPeekable<R> {
           // Continue peeking into the buffer if there's still space
           buf.put_slice(this.buffer);
 
-          match this.peeker.poll_read(cx, buf) {
+          match this.reader.poll_read(cx, buf) {
             Poll::Ready(Ok(())) => {
               this.buffer.clear();
               Poll::Ready(Ok(()))
@@ -174,7 +174,7 @@ impl<R: AsyncRead> AsyncRead for AsyncPeekable<R> {
       };
     }
 
-    this.peeker.poll_read(cx, buf)
+    this.reader.poll_read(cx, buf)
   }
 }
 
@@ -194,7 +194,7 @@ impl<R: AsyncRead> AsyncPeek for AsyncPeekable<R> {
         // Not enough data in the buffer, need to peek more
         buf.put_slice(this.buffer);
         let cur = buf.filled().len();
-        match this.peeker.poll_read(cx, buf) {
+        match this.reader.poll_read(cx, buf) {
           Poll::Ready(Ok(())) => {
             let filled = buf.filled();
             let read = filled.len() - cur;
@@ -216,7 +216,7 @@ impl<R: AsyncRead> AsyncPeek for AsyncPeekable<R> {
     } else {
       // No data in the buffer, try to peek directly into `buf`
       let cur = buf.filled().len();
-      match this.peeker.poll_read(cx, buf) {
+      match this.reader.poll_read(cx, buf) {
         Poll::Ready(Ok(())) => {
           let filled = buf.filled();
           let read = filled.len() - cur;
@@ -235,7 +235,7 @@ impl<R> AsyncPeekable<R> {
   #[inline]
   pub fn new(reader: R) -> Self {
     Self {
-      peeker: reader,
+      reader,
       buffer: Buffer::new(),
     }
   }
@@ -245,7 +245,7 @@ impl<R> AsyncPeekable<R> {
   #[inline]
   pub fn with_capacity(reader: R, capacity: usize) -> Self {
     Self {
-      peeker: reader,
+      reader,
       buffer: Buffer::with_capacity(capacity),
     }
   }
@@ -253,13 +253,13 @@ impl<R> AsyncPeekable<R> {
 
 /// An extension trait which adds peek related utility methods to [`AsyncRead`] types
 pub trait AsyncPeekExt: AsyncRead {
-  /// Creates a new `AsyncPeekable` which will wrap the given peeker.
+  /// Creates a new `AsyncPeekable` which will wrap the given reader.
   fn peekable(self) -> AsyncPeekable<Self>
   where
     Self: Sized,
   {
     AsyncPeekable {
-      peeker: self,
+      reader: self,
       buffer: Buffer::new(),
     }
   }

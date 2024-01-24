@@ -53,10 +53,10 @@ pub mod future;
 #[cfg_attr(docsrs, doc(cfg(feature = "tokio")))]
 pub mod tokio;
 
-/// A wrapper around an [`Read`] types to make them support [`Peek`] methods.
+/// A wrapper around an [`Read`] types to make them support peek related methods.
 pub struct Peekable<R> {
-  /// The inner peeker.
-  peeker: R,
+  /// The inner reader.
+  reader: R,
   /// The buffer used to store peeked bytes.
   buffer: Buffer,
 }
@@ -83,7 +83,7 @@ impl<R: Read> Read for Peekable<R> {
         cmp::Ordering::Greater => {
           buf[..buffer_len].copy_from_slice(&this.buffer);
           buf = &mut buf[buffer_len..];
-          match this.peeker.read(buf) {
+          match this.reader.read(buf) {
             Ok(bytes) => {
               this.buffer.clear();
               Ok(bytes + buffer_len)
@@ -94,14 +94,14 @@ impl<R: Read> Read for Peekable<R> {
       };
     }
 
-    this.peeker.read(buf)
+    this.reader.read(buf)
   }
 }
 
 impl<R> From<R> for Peekable<R> {
-  fn from(peeker: R) -> Self {
+  fn from(reader: R) -> Self {
     Peekable {
-      peeker,
+      reader,
       buffer: Buffer::new(),
     }
   }
@@ -111,7 +111,7 @@ impl<R> Peekable<R> {
   /// Creates a new peekable wrapper around the given reader.
   pub fn new(reader: R) -> Self {
     Self {
-      peeker: reader,
+      reader,
       buffer: Buffer::new(),
     }
   }
@@ -120,7 +120,7 @@ impl<R> Peekable<R> {
   /// capacity for the peek buffer.
   pub fn with_capacity(reader: R, capacity: usize) -> Self {
     Self {
-      peeker: reader,
+      reader,
       buffer: Buffer::with_capacity(capacity),
     }
   }
@@ -247,7 +247,7 @@ impl<R: Read> Peekable<R> {
         cmp::Ordering::Greater => {
           let this = self;
           this.buffer.resize(want_peek, 0);
-          match this.peeker.read(&mut this.buffer[buffer_len..]) {
+          match this.reader.read(&mut this.buffer[buffer_len..]) {
             Ok(n) => {
               this.buffer.truncate(n + buffer_len);
               buf[..buffer_len + n].copy_from_slice(&this.buffer);
@@ -260,7 +260,7 @@ impl<R: Read> Peekable<R> {
     }
 
     let this = self;
-    match this.peeker.read(buf) {
+    match this.reader.read(buf) {
       Ok(bytes) => {
         this.buffer.extend_from_slice(&buf[..bytes]);
         Ok(bytes)
@@ -343,7 +343,7 @@ impl<R: Read> Peekable<R> {
     let original_buf = buf.len();
     buf.extend_from_slice(&this.buffer);
 
-    let fut = this.peeker.read_to_end(buf);
+    let fut = this.reader.read_to_end(buf);
     match fut {
       Ok(read) => {
         this.buffer.extend_from_slice(&buf[original_buf + inbuf..]);
@@ -408,7 +408,7 @@ impl<R: Read> Peekable<R> {
     buf.push_str(s);
 
     let inbuf = self.buffer.len();
-    let fut = self.peeker.read_to_string(buf);
+    let fut = self.reader.read_to_string(buf);
     match fut {
       Ok(read) => {
         self.buffer.extend_from_slice(&buf.as_bytes()[inbuf..]);
@@ -518,7 +518,7 @@ impl<R: Read> Peekable<R> {
     buf[..peek_buf_len].copy_from_slice(&this.buffer);
     let mut readed = peek_buf_len;
     while !buf.is_empty() {
-      let n = this.peeker.read(buf)?;
+      let n = this.reader.read(buf)?;
       {
         let (read, rest) = mem::take(&mut buf).split_at_mut(n);
         this.buffer.extend_from_slice(read);
@@ -544,7 +544,7 @@ pub trait PeekExt: Read {
     Self: Sized,
   {
     Peekable {
-      peeker: self,
+      reader: self,
       buffer: Buffer::new(),
     }
   }
