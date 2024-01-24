@@ -49,11 +49,15 @@ where
     let mut fut = reader.reader.read_to_string(buf);
     match fut.poll_unpin(cx) {
       Poll::Ready(Ok(read)) => {
-        reader.buffer.extend_from_slice(&buf.as_bytes()[original_buf_len + inbuf..]);
+        reader
+          .buffer
+          .extend_from_slice(&buf.as_bytes()[original_buf_len + inbuf..]);
         Poll::Ready(Ok(read + inbuf))
       }
       Poll::Ready(Err(e)) => {
-        reader.buffer.extend_from_slice(&buf.as_bytes()[original_buf_len + inbuf..]);
+        reader
+          .buffer
+          .extend_from_slice(&buf.as_bytes()[original_buf_len + inbuf..]);
         Poll::Ready(Err(e))
       }
       Poll::Pending => Poll::Pending,

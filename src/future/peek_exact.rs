@@ -39,9 +39,7 @@ impl<P: AsyncRead + Unpin> Future for PeekExact<'_, P> {
     }
 
     this.buf[..peek_buf_len].copy_from_slice(&this.peekable.buffer);
-    let mut fut = this
-      .peekable
-      .read_exact(&mut this.buf[peek_buf_len..]);
+    let mut fut = this.peekable.read_exact(&mut this.buf[peek_buf_len..]);
 
     fut.poll_unpin(cx)
   }

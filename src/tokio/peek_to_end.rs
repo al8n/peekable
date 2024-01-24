@@ -53,13 +53,17 @@ where
     tokio::pin!(fut);
     match fut.poll(cx) {
       Poll::Ready(Ok(read)) => {
-        me.reader.buffer.extend_from_slice(&me.buf[original_buf_len + peek_buf_len..]);
+        me.reader
+          .buffer
+          .extend_from_slice(&me.buf[original_buf_len + peek_buf_len..]);
         Poll::Ready(Ok(peek_buf_len + read))
       }
       Poll::Ready(Err(e)) => {
-        me.reader.buffer.extend_from_slice(&me.buf[original_buf_len + peek_buf_len..]);
+        me.reader
+          .buffer
+          .extend_from_slice(&me.buf[original_buf_len + peek_buf_len..]);
         Poll::Ready(Err(e))
-      },
+      }
       Poll::Pending => Poll::Pending,
     }
   }

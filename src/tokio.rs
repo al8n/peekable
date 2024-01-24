@@ -414,7 +414,7 @@ impl<R: AsyncRead + Unpin> AsyncPeekable<R> {
   /// Creates a future which will peek all the bytes from this `AsyncPeek`.
   ///
   /// On success the total number of bytes peek is returned.
-  /// 
+  ///
   /// Equivalent to:
   ///
   /// ```ignore
@@ -434,7 +434,7 @@ impl<R: AsyncRead + Unpin> AsyncPeekable<R> {
   /// If a peek error is encountered then the `peek_to_end` operation
   /// immediately completes. Any bytes which have already been peek will
   /// be appended to `buf`.
-  /// 
+  ///
   /// # Examples
   ///
   /// ```

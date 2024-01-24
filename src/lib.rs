@@ -5,7 +5,10 @@
 #![cfg_attr(docsrs, allow(unused_attributes))]
 #![deny(missing_docs)]
 
-use std::{cmp, io::{IoSliceMut, Read, Result}};
+use std::{
+  cmp,
+  io::{IoSliceMut, Read, Result},
+};
 
 #[cfg(feature = "smallvec")]
 type Buffer = smallvec::SmallVec<[u8; 64]>;
@@ -436,8 +439,7 @@ impl<R: Read> Peekable<R> {
     }
 
     buf[..buf_len].copy_from_slice(&this.buffer);
-    this
-      .read_exact(buf)
+    this.read_exact(buf)
   }
 }
 

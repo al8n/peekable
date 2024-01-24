@@ -64,9 +64,7 @@ where
 
     me.buf.put_slice(&me.reader.buffer);
 
-    let fut = me
-      .reader
-      .read_exact(me.buf.initialize_unfilled());
+    let fut = me.reader.read_exact(me.buf.initialize_unfilled());
     ::tokio::pin!(fut);
     fut.poll(cx)
   }

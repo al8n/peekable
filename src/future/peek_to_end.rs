@@ -40,11 +40,17 @@ where
     let mut fut = this.peekable.reader.read_to_end(this.buf);
     match fut.poll_unpin(cx) {
       Poll::Ready(Ok(read)) => {
-        this.peekable.buffer.extend_from_slice(&this.buf[original_buf_len + inbuf..]);
+        this
+          .peekable
+          .buffer
+          .extend_from_slice(&this.buf[original_buf_len + inbuf..]);
         Poll::Ready(Ok(read + inbuf))
       }
       Poll::Ready(Err(e)) => {
-        this.peekable.buffer.extend_from_slice(&this.buf[original_buf_len + inbuf..]);
+        this
+          .peekable
+          .buffer
+          .extend_from_slice(&this.buf[original_buf_len + inbuf..]);
         Poll::Ready(Err(e))
       }
       Poll::Pending => Poll::Pending,

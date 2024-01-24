@@ -68,7 +68,7 @@ where
           .buffer
           .extend_from_slice(&me.output.as_bytes()[original_buf_len + peek_buf_len..]);
         Poll::Ready(Err(e))
-      },
+      }
       Poll::Pending => Poll::Pending,
     }
   }
