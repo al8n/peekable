@@ -262,6 +262,28 @@ impl<R> AsyncPeekable<R> {
       buffer: Buffer::with_capacity(capacity),
     }
   }
+
+  /// Returns the bytes already be peeked into memory and a mutable reference to the underlying reader.
+  ///
+  /// **WARNING: If you invoke `AsyncRead` or `AsyncReadExt` methods on the underlying reader, may lead to unexpected read behaviors.**
+  #[inline]
+  pub fn get_mut(&mut self) -> (&[u8], &mut R) {
+    (&self.buffer, &mut self.reader)
+  }
+
+  /// Returns the bytes already be peeked into memory and a reference to the underlying reader.
+  ///
+  /// **WARNING: If you invoke `AsyncRead` or `AsyncReadExt` methods on the underlying reader, may lead to unexpected read behaviors.**
+  #[inline]
+  pub fn get_ref(&self) -> (&[u8], &R) {
+    (&self.buffer, &self.reader)
+  }
+
+  /// Consumes the `AsyncPeekable`, returning the a vec may contain the bytes already be peeked into memory and the wrapped reader.
+  #[inline]
+  pub fn into_components(self) -> (Buffer, R) {
+    (self.buffer, self.reader)
+  }
 }
 
 impl<R: AsyncRead + Unpin> AsyncPeekable<R> {

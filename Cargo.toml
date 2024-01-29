@@ -1,12 +1,12 @@
 [package]
 name = "peekable"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 repository = "https://github.com/al8n/peekable"
 homepage = "https://github.com/al8n/peekable"
 documentation = "https://docs.rs/peekable"
 description = "Peakable reader and async reader"
-license = "MIT/Apache-2.0"
+license = "MIT or Apache-2.0"
 rust-version = "1.56"
 keywords = ["peek", "io", "async", "tokio", "futures"]
 categories = ["asynchronous", "network-programming", "development-tools"]
@@ -19,7 +19,6 @@ tokio = ["dep:tokio", "pin-project-lite", "bytes"]
 [dependencies]
 smallvec = { version = "1", optional = true }
 
-# futures-io =  { version = "0.3", optional = true }
 futures-util = { version = "=0.3.29", optional = true, features = ["io"] }
 pin-project-lite = { version = "0.2", optional = true }
 
