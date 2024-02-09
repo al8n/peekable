@@ -531,3 +531,27 @@ impl<R: AsyncRead + Unpin> AsyncPeekable<R> {
     peek_to_string(self, dst)
   }
 }
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use futures::io::Cursor;
+  use tokio::io::AsyncReadExt;
+  use tokio_util::compat::FuturesAsyncReadCompatExt;
+
+  #[tokio::test]
+  async fn test_peek_exact_peek_exact_read_exact() {
+    let mut peekable = Cursor::new([1, 2, 3, 4, 5, 6, 7, 8, 9]).compat().peekable();
+    let mut buf1 = [0; 2];
+    peekable.peek_exact(&mut buf1).await.unwrap();
+    assert_eq!(buf1, [1, 2]);
+
+    let mut buf2 = [0; 4];
+    peekable.peek_exact(&mut buf2).await.unwrap();
+    assert_eq!(buf2, [1, 2, 3, 4]);
+
+    let mut buf3 = [0; 4];
+    peekable.read_exact(&mut buf3).await.unwrap();
+    assert_eq!(buf3, [1, 2, 3, 4]);
+  }
+}

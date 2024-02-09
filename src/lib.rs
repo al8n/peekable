@@ -540,6 +540,10 @@ impl<R: Read> Peekable<R> {
     }
 
     buf[..peek_buf_len].copy_from_slice(&this.buffer);
+    {
+      let (_read, rest) = mem::take(&mut buf).split_at_mut(peek_buf_len);
+      buf = rest;
+    }
     let mut readed = peek_buf_len;
     while !buf.is_empty() {
       let n = this.reader.read(buf)?;
@@ -575,3 +579,25 @@ pub trait PeekExt: Read {
 }
 
 impl<R: Read + ?Sized> PeekExt for R {}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use std::io::{Cursor, Read};
+
+  #[test]
+  fn test_peek_exact_peek_exact_read_exact() {
+    let mut peekable = Cursor::new([1, 2, 3, 4, 5, 6, 7, 8, 9]).peekable();
+    let mut buf1 = [0; 2];
+    peekable.peek_exact(&mut buf1).unwrap();
+    assert_eq!(buf1, [1, 2]);
+
+    let mut buf2 = [0; 4];
+    peekable.peek_exact(&mut buf2).unwrap();
+    assert_eq!(buf2, [1, 2, 3, 4]);
+
+    let mut buf3 = [0; 4];
+    peekable.read_exact(&mut buf3).unwrap();
+    assert_eq!(buf3, [1, 2, 3, 4]);
+  }
+}

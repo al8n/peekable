@@ -1,12 +1,12 @@
 [package]
 name = "peekable"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 repository = "https://github.com/al8n/peekable"
 homepage = "https://github.com/al8n/peekable"
 documentation = "https://docs.rs/peekable"
 description = "Peakable reader and async reader"
-license = "MIT or Apache-2.0"
+license = "MIT OR Apache-2.0"
 rust-version = "1.56"
 keywords = ["peek", "io", "async", "tokio", "futures"]
 categories = ["asynchronous", "network-programming", "development-tools"]

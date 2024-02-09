@@ -20,10 +20,16 @@ English | [简体中文][zh-cn-url]
 </div>
 
 ## Installation
+
 ```toml
 [dependencies]
-peekable = "0.0.0"
+peekable = "0.2"
 ```
+
+## TODO
+
+- [ ] Make peek buffer generic over `const N: usize`
+- [ ] Add fill peek buffer API
 
 #### License
 

@@ -39,6 +39,10 @@ impl<P: AsyncRead + Unpin> Future for PeekExact<'_, P> {
     }
 
     this.buf[..peek_buf_len].copy_from_slice(&this.peekable.buffer);
+    {
+      let (_, rest) = mem::take(&mut this.buf).split_at_mut(peek_buf_len);
+      this.buf = rest;
+    }
 
     let mut readed = peek_buf_len;
     while !this.buf.is_empty() {
