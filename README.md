@@ -99,12 +99,6 @@ English | [简体中文][zh-cn-url]
   assert_eq!(peeked, readed);
   ```
 
-
-## TODO
-
-- [ ] Make peek buffer generic over `const N: usize`
-- [ ] Add fill peek buffer API
-
 #### License
 
 `peekable` is under the terms of both the MIT license and the

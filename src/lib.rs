@@ -165,8 +165,35 @@ impl<R> Peekable<R> {
   /// assert_eq!(bytes, 2);
   /// assert_eq!(output, [3, 4]);
   /// ```
+  #[inline]
   pub fn consume(&mut self) -> Buffer {
     mem::take(&mut self.buffer)
+  }
+
+  /// Consumes the peek buffer in place so that the peek buffer can be reused and avoid allocating.
+  ///
+  /// # Examples
+  ///
+  /// ```rust
+  /// use std::io::Cursor;
+  ///
+  /// let mut peekable = peekable::Peekable::from(Cursor::new([1, 2, 3, 4]));
+  ///
+  /// let mut output = [0u8; 2];
+  /// let bytes = peekable.peek(&mut output).unwrap();
+  /// assert_eq!(bytes, 2);
+  /// assert_eq!(output, [1, 2]);
+  ///
+  /// peekable.consume_in_place();
+  ///
+  /// let mut output = [0u8; 2];
+  /// let bytes = peekable.peek(&mut output).unwrap();
+  /// assert_eq!(bytes, 2);
+  /// assert_eq!(output, [3, 4]);
+  /// ```
+  #[inline]
+  pub fn consume_in_place(&mut self) {
+    self.buffer.clear();
   }
 
   /// Returns the bytes already be peeked into memory and a mutable reference to the underlying reader.
@@ -658,13 +685,41 @@ impl<R: Read> Peekable<R> {
 
     Ok(())
   }
+
+  /// Try to fill the peek buffer with more data. Returns the number of bytes peeked.
+  ///
+  /// # Examples
+  ///
+  /// ```rust
+  /// use std::io;
+  /// use std::io::{Cursor, Read};
+  /// use peekable::PeekExt;
+  ///
+  /// let mut peekable = Cursor::new([1, 2, 3, 4]).peekable_with_capacity(5);
+  /// let mut output = [0u8; 4];
+  ///
+  /// peekable.peek_exact(&mut output[..1]).unwrap();
+  /// assert_eq!(output, [1, 0, 0, 0]);
+  ///
+  /// let bytes = peekable.fill_peek_buf().unwrap();
+  /// assert_eq!(bytes, 3);
+  ///
+  /// let bytes = peekable.peek(&mut output).unwrap();
+  /// assert_eq!(output, [1, 2, 3, 4].as_slice());
+  /// ````
+  pub fn fill_peek_buf(&mut self) -> Result<usize> {
+    let cap = self.buffer.capacity();
+    let cur = self.buffer.len();
+    self.buffer.resize(cap, 0);
+    let peeked = self.reader.read(&mut self.buffer[cur..])?;
+    self.buffer.truncate(cur + peeked);
+    Ok(peeked)
+  }
 }
 
 /// An extension trait which adds utility methods to [`Read`] types.
 pub trait PeekExt: Read {
-  /// Wraps a [`Read`] type in a `Peekable` which provides a [`peek`] method.
-  ///
-  /// [`peek`]: Peek::peek
+  /// Wraps a [`Read`] type in a `Peekable` which provides a `peek` related methods.
   fn peekable(self) -> Peekable<Self>
   where
     Self: Sized,
@@ -672,6 +727,17 @@ pub trait PeekExt: Read {
     Peekable {
       reader: self,
       buffer: Buffer::new(),
+    }
+  }
+
+  /// Wraps a [`Read`] type in a `Peekable` which provides a `peek` related methods with a specified capacity.
+  fn peekable_with_capacity(self, capacity: usize) -> Peekable<Self>
+  where
+    Self: Sized,
+  {
+    Peekable {
+      reader: self,
+      buffer: Buffer::with_capacity(capacity),
     }
   }
 }
