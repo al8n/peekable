@@ -4,6 +4,11 @@
 
 ## RELEASED
 
+### 0.2.2 (Mar 21st, 2024)
+
+- Add `consume` API
+- Add DocTests for some APIs
+
 ### 0.2.1 (Feb 10th, 2024)
 
 - Fix `peek_exact` bug and add `peek_exact_peek_exact_read_exact` test cases

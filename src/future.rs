@@ -1,13 +1,11 @@
 use std::{
-  cmp,
   future::Future,
-  io::Result,
   ops::DerefMut,
   pin::Pin,
   task::{Context, Poll},
 };
 
-use futures_util::{io::IoSliceMut, AsyncRead};
+use futures_util::AsyncRead;
 
 use super::*;
 
@@ -245,6 +243,19 @@ impl<R: AsyncRead> AsyncPeek for AsyncPeekable<R> {
 
 impl<R> AsyncPeekable<R> {
   /// Creates a new `AsyncPeekable` which will wrap the given reader.
+  ///
+  /// The peek buffer will have the default capacity.
+  ///
+  /// # Examples
+  ///
+  /// ```rust
+  /// use peekable::future::AsyncPeekable;
+  ///
+  /// # futures::executor::block_on(async {
+  /// let reader = futures::io::Cursor::new(&b"hello"[..]);
+  /// let peekable = AsyncPeekable::new(reader);
+  /// # });
+  ///
   #[inline]
   pub fn new(reader: R) -> Self {
     Self {
@@ -255,6 +266,16 @@ impl<R> AsyncPeekable<R> {
 
   /// Creates a new peekable wrapper around the given reader with the specified
   /// capacity for the peek buffer.
+  ///
+  /// # Examples
+  ///
+  /// ```rust
+  /// use peekable::future::AsyncPeekable;
+  ///
+  /// # futures::executor::block_on(async {
+  /// let reader = futures::io::Cursor::new([0; 1024]);
+  /// let peekable = AsyncPeekable::with_capacity(reader, 1024);
+  /// # });
   #[inline]
   pub fn with_capacity(reader: R, capacity: usize) -> Self {
     Self {
@@ -263,9 +284,57 @@ impl<R> AsyncPeekable<R> {
     }
   }
 
+  /// Consumes the peek buffer and returns the buffer.
+  ///
+  /// # Examples
+  ///
+  /// ```rust
+  /// use peekable::future::AsyncPeekable;
+  ///
+  /// # futures::executor::block_on(async {
+  /// let reader = futures::io::Cursor::new([1, 2, 3, 4]);
+  /// let mut peekable = AsyncPeekable::from(reader);
+  ///
+  /// let mut output = [0u8; 2];
+  /// let bytes = peekable.peek(&mut output).await.unwrap();
+  /// assert_eq!(bytes, 2);
+  /// assert_eq!(output, [1, 2]);
+  ///
+  /// let buffer = peekable.consume();
+  /// assert_eq!(buffer.as_slice(), [1, 2].as_slice());
+  ///
+  /// let mut output = [0u8; 2];
+  /// let bytes = peekable.peek(&mut output).await.unwrap();
+  /// assert_eq!(bytes, 2);
+  /// assert_eq!(output, [3, 4]);
+  /// # });
+  /// ```
+  pub fn consume(&mut self) -> Buffer {
+    mem::take(&mut self.buffer)
+  }
+
   /// Returns the bytes already be peeked into memory and a mutable reference to the underlying reader.
   ///
   /// **WARNING: If you invoke `AsyncRead` or `AsyncReadExt` methods on the underlying reader, may lead to unexpected read behaviors.**
+  ///
+  /// # Examples
+  ///
+  /// ```rust
+  /// use peekable::future::AsyncPeekable;
+  ///
+  /// # futures::executor::block_on(async {
+  /// let reader = futures::io::Cursor::new([1, 2, 3, 4]);
+  /// let mut peekable = AsyncPeekable::from(reader);
+  ///
+  /// let mut output = [0u8; 2];
+  /// let bytes = peekable.peek(&mut output).await.unwrap();
+  /// assert_eq!(bytes, 2);
+  /// assert_eq!(output, [1, 2]);
+  ///
+  /// let (buffer, reader) = peekable.get_mut();
+  /// assert_eq!(buffer, [1, 2].as_slice());
+  /// # });
+  /// ````
   #[inline]
   pub fn get_mut(&mut self) -> (&[u8], &mut R) {
     (&self.buffer, &mut self.reader)
@@ -274,12 +343,48 @@ impl<R> AsyncPeekable<R> {
   /// Returns the bytes already be peeked into memory and a reference to the underlying reader.
   ///
   /// **WARNING: If you invoke `AsyncRead` or `AsyncReadExt` methods on the underlying reader, may lead to unexpected read behaviors.**
+  ///
+  /// # Examples
+  ///
+  /// ```rust
+  /// use peekable::future::AsyncPeekable;
+  ///
+  /// # futures::executor::block_on(async {
+  /// let reader = futures::io::Cursor::new([1, 2, 3, 4]);
+  /// let mut peekable = AsyncPeekable::from(reader);
+  ///
+  /// let mut output = [0u8; 2];
+  /// let bytes = peekable.peek(&mut output).await.unwrap();
+  /// assert_eq!(bytes, 2);
+  /// assert_eq!(output, [1, 2]);
+  ///
+  /// let (buffer, reader) = peekable.get_ref();
+  /// assert_eq!(buffer, [1, 2].as_slice());
+  /// # });
   #[inline]
   pub fn get_ref(&self) -> (&[u8], &R) {
     (&self.buffer, &self.reader)
   }
 
   /// Consumes the `AsyncPeekable`, returning the a vec may contain the bytes already be peeked into memory and the wrapped reader.
+  ///
+  /// # Examples
+  ///
+  /// ```rust
+  /// use peekable::future::AsyncPeekable;
+  ///
+  /// # futures::executor::block_on(async {
+  /// let reader = futures::io::Cursor::new([1, 2, 3, 4]);
+  /// let mut peekable = AsyncPeekable::from(reader);
+  ///
+  /// let mut output = [0u8; 2];
+  /// let bytes = peekable.peek(&mut output).await.unwrap();
+  /// assert_eq!(bytes, 2);
+  /// assert_eq!(output, [1, 2]);
+  ///
+  /// let (buffer, reader) = peekable.into_components();
+  /// assert_eq!(buffer.as_slice(), [1, 2].as_slice());
+  /// # });
   #[inline]
   pub fn into_components(self) -> (Buffer, R) {
     (self.buffer, self.reader)
@@ -479,6 +584,10 @@ impl<R: AsyncRead + Unpin> AsyncPeekable<R> {
   /// assert_eq!(bytes, 4);
   /// assert_eq!(buffer, String::from("1234"));
   ///
+  /// // peek invalid utf-8
+  /// let mut peekable = Cursor::new([255; 4]).peekable();
+  /// let mut buffer = String::with_capacity(4);
+  /// assert!(peekable.peek_to_string(&mut buffer).await.is_err());
   /// # Ok::<(), Box<dyn std::error::Error>>(()) }).unwrap();
   /// ```
   pub fn peek_to_string<'a>(&'a mut self, buf: &'a mut String) -> PeekToString<'a, R>

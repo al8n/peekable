@@ -232,6 +232,18 @@ impl<R: AsyncRead> AsyncPeek for AsyncPeekable<R> {
 
 impl<R> AsyncPeekable<R> {
   /// Creates a new `AsyncPeekable` which will wrap the given peeker.
+  ///
+  /// The peek buffer will have a capacity of 1024 bytes.
+  ///
+  /// # Examples
+  ///
+  /// ```rust
+  /// use peekable::tokio::AsyncPeekable;
+  ///
+  /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
+  /// let reader = std::io::Cursor::new([1, 2, 3, 4]);
+  /// let mut peekable = AsyncPeekable::from(reader);
+  /// # });
   #[inline]
   pub fn new(reader: R) -> Self {
     Self {
@@ -242,6 +254,16 @@ impl<R> AsyncPeekable<R> {
 
   /// Creates a new `AsyncPeekable` which will wrap the given peeker with the specified
   /// capacity for the peek buffer.
+  ///
+  /// # Examples
+  ///
+  /// ```rust
+  /// use peekable::tokio::AsyncPeekable;
+  ///
+  /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
+  /// let reader = std::io::Cursor::new([0; 1024]);
+  /// let mut peekable = AsyncPeekable::with_capacity(reader, 1024);
+  /// # });
   #[inline]
   pub fn with_capacity(reader: R, capacity: usize) -> Self {
     Self {
@@ -250,9 +272,56 @@ impl<R> AsyncPeekable<R> {
     }
   }
 
+  /// Consumes the peek buffer and returns the buffer.
+  ///
+  /// # Examples
+  ///
+  /// ```rust
+  /// use peekable::tokio::AsyncPeekable;
+  ///
+  /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
+  /// let reader = std::io::Cursor::new([1, 2, 3, 4]);
+  /// let mut peekable = AsyncPeekable::from(reader);
+  ///
+  /// let mut output = [0u8; 2];
+  /// let bytes = peekable.peek(&mut output).await.unwrap();
+  /// assert_eq!(bytes, 2);
+  /// assert_eq!(output, [1, 2]);
+  ///
+  /// let buffer = peekable.consume();
+  /// assert_eq!(buffer.as_slice(), [1, 2].as_slice());
+  ///
+  /// let mut output = [0u8; 2];
+  /// let bytes = peekable.peek(&mut output).await.unwrap();
+  /// assert_eq!(bytes, 2);
+  /// assert_eq!(output, [3, 4]);
+  /// # });
+  /// ```
+  pub fn consume(&mut self) -> Buffer {
+    core::mem::take(&mut self.buffer)
+  }
+
   /// Returns the bytes already be peeked into memory and a mutable reference to the underlying reader.
   ///
   /// **WARNING: If you invoke `AsyncRead` or `AsyncReadExt` methods on the underlying reader, may lead to unexpected read behaviors.**
+  ///
+  /// # Examples
+  ///
+  /// ```rust
+  /// use peekable::tokio::AsyncPeekable;
+  ///
+  /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
+  /// let reader = std::io::Cursor::new([1, 2, 3, 4]);
+  /// let mut peekable = AsyncPeekable::from(reader);
+  ///
+  /// let mut output = [0u8; 2];
+  /// let bytes = peekable.peek(&mut output).await.unwrap();
+  /// assert_eq!(bytes, 2);
+  /// assert_eq!(output, [1, 2]);
+  ///
+  /// let (buffer, reader) = peekable.get_mut();
+  /// assert_eq!(buffer, [1, 2]);
+  /// # });
   #[inline]
   pub fn get_mut(&mut self) -> (&[u8], &mut R) {
     (&self.buffer, &mut self.reader)
@@ -261,12 +330,48 @@ impl<R> AsyncPeekable<R> {
   /// Returns the bytes already be peeked into memory and a reference to the underlying reader.
   ///
   /// **WARNING: If you invoke `AsyncRead` or `AsyncReadExt` methods on the underlying reader, may lead to unexpected read behaviors.**
+  ///
+  /// # Examples
+  ///
+  /// ```rust
+  /// use peekable::tokio::AsyncPeekable;
+  ///
+  /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
+  /// let reader = std::io::Cursor::new([1, 2, 3, 4]);
+  /// let mut peekable = AsyncPeekable::from(reader);
+  ///
+  /// let mut output = [0u8; 2];
+  /// let bytes = peekable.peek(&mut output).await.unwrap();
+  /// assert_eq!(bytes, 2);
+  /// assert_eq!(output, [1, 2]);
+  ///
+  /// let (buffer, reader) = peekable.get_ref();
+  /// assert_eq!(buffer, [1, 2]);
+  /// # });
   #[inline]
   pub fn get_ref(&self) -> (&[u8], &R) {
     (&self.buffer, &self.reader)
   }
 
   /// Consumes the `AsyncPeekable`, returning the a vec may contain the bytes already be peeked into memory and the wrapped reader.
+  ///
+  /// # Examples
+  ///
+  /// ```rust
+  /// use peekable::tokio::AsyncPeekable;
+  ///
+  /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
+  /// let reader = std::io::Cursor::new([1, 2, 3, 4]);
+  /// let mut peekable = AsyncPeekable::from(reader);
+  ///
+  /// let mut output = [0u8; 2];
+  /// let bytes = peekable.peek(&mut output).await.unwrap();
+  /// assert_eq!(bytes, 2);
+  /// assert_eq!(output, [1, 2]);
+  ///
+  /// let (buffer, reader) = peekable.into_components();
+  /// assert_eq!(buffer.as_slice(), [1, 2]);
+  /// # });
   #[inline]
   pub fn into_components(self) -> (Buffer, R) {
     (self.buffer, self.reader)
@@ -303,13 +408,11 @@ impl<R: AsyncRead + Unpin> AsyncPeekable<R> {
   /// ```
   /// # #[tokio::main]
   /// # async fn main() -> std::io::Result<()> {
-  /// use futures::io::Cursor;
-  /// use tokio::io::AsyncReadExt;
-  /// use tokio_util::compat::FuturesAsyncReadCompatExt;
   /// use peekable::tokio::AsyncPeekExt;
+  /// use tokio::io::AsyncReadExt;
   ///
   ///
-  /// let mut peekable = Cursor::new([1, 2, 3, 4]).compat().peekable();
+  /// let mut peekable = std::io::Cursor::new([1, 2, 3, 4]).peekable();
   /// let mut output = [0u8; 5];
   ///
   /// let bytes = peekable.peek(&mut output[..3]).await?;
@@ -372,12 +475,11 @@ impl<R: AsyncRead + Unpin> AsyncPeekable<R> {
   /// ```
   /// # #[tokio::main]
   /// # async fn main() -> std::io::Result<()> {
-  /// use futures::io::Cursor;
+  /// use std::io::Cursor;
   /// use tokio::io::AsyncReadExt;
-  /// use tokio_util::compat::FuturesAsyncReadCompatExt;
   /// use peekable::tokio::AsyncPeekExt;
   ///
-  /// let mut peekable = Cursor::new([1, 2, 3, 4]).compat().peekable();
+  /// let mut peekable = Cursor::new([1, 2, 3, 4]).peekable();
   /// let mut output = [0u8; 4];
   ///
   /// peekable.peek_exact(&mut output).await?;
@@ -407,12 +509,11 @@ impl<R: AsyncRead + Unpin> AsyncPeekable<R> {
   /// # #[tokio::main]
   /// # async fn main() -> std::io::Result<()> {
   ///
-  /// use futures::io::Cursor;
+  /// use std::io::Cursor;
   /// use tokio::io::AsyncReadExt;
-  /// use tokio_util::compat::FuturesAsyncReadCompatExt;
   /// use peekable::tokio::AsyncPeekExt;
   ///
-  /// let mut peekable = Cursor::new([1, 2, 3, 4]).compat().peekable();
+  /// let mut peekable = Cursor::new([1, 2, 3, 4]).peekable();
   /// let mut output = [0u8; 5];
   ///
   /// let result = peekable.peek_exact(&mut output).await;
@@ -462,12 +563,11 @@ impl<R: AsyncRead + Unpin> AsyncPeekable<R> {
   /// ```
   /// # #[tokio::main]
   /// # async fn main() -> std::io::Result<()> {
-  /// use futures::io::Cursor;
+  /// use std::io::Cursor;
   /// use tokio::io::AsyncReadExt;
-  /// use tokio_util::compat::FuturesAsyncReadCompatExt;
   /// use peekable::tokio::AsyncPeekExt;
   ///
-  /// let mut peekable = Cursor::new([1, 2, 3, 4]).compat().peekable();
+  /// let mut peekable = Cursor::new([1, 2, 3, 4]).peekable();
   /// let mut output = Vec::with_capacity(4);
   ///
   /// let bytes = peekable.peek_to_end(&mut output).await?;
@@ -501,12 +601,11 @@ impl<R: AsyncRead + Unpin> AsyncPeekable<R> {
   /// ```
   /// # #[tokio::main]
   /// # async fn main() -> std::io::Result<()> {
-  /// use futures::io::Cursor;
+  /// use std::io::Cursor;
   /// use tokio::io::AsyncReadExt;
-  /// use tokio_util::compat::FuturesAsyncReadCompatExt;
   /// use peekable::tokio::AsyncPeekExt;
   ///
-  /// let mut peekable = Cursor::new(&b"1234"[..]).compat().peekable();
+  /// let mut peekable = Cursor::new(&b"1234"[..]).peekable();
   /// let mut buffer = String::with_capacity(4);
   ///
   /// let bytes = peekable.peek_to_string(&mut buffer).await?;
@@ -521,6 +620,10 @@ impl<R: AsyncRead + Unpin> AsyncPeekable<R> {
   /// assert_eq!(bytes, 4);
   /// assert_eq!(buffer, String::from("1234"));
   ///
+  /// // peek invalid utf-8
+  /// let mut peekable = Cursor::new([255; 4]).peekable();
+  /// let mut buffer = String::with_capacity(4);
+  /// assert!(peekable.peek_to_string(&mut buffer).await.is_err());
   /// # Ok::<(), std::io::Error>(())
   /// # }
   /// ```
@@ -535,13 +638,12 @@ impl<R: AsyncRead + Unpin> AsyncPeekable<R> {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use futures::io::Cursor;
+  use std::io::Cursor;
   use tokio::io::AsyncReadExt;
-  use tokio_util::compat::FuturesAsyncReadCompatExt;
 
   #[tokio::test]
   async fn test_peek_exact_peek_exact_read_exact() {
-    let mut peekable = Cursor::new([1, 2, 3, 4, 5, 6, 7, 8, 9]).compat().peekable();
+    let mut peekable = Cursor::new([1, 2, 3, 4, 5, 6, 7, 8, 9]).peekable();
     let mut buf1 = [0; 2];
     peekable.peek_exact(&mut buf1).await.unwrap();
     assert_eq!(buf1, [1, 2]);

@@ -3,7 +3,6 @@ use pin_project_lite::pin_project;
 use std::future::Future;
 use std::io;
 use std::marker::PhantomPinned;
-use std::marker::Unpin;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 

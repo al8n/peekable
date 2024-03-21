@@ -111,6 +111,14 @@ impl<R> From<R> for Peekable<R> {
 
 impl<R> Peekable<R> {
   /// Creates a new peekable wrapper around the given reader.
+  ///
+  /// # Examples
+  ///
+  /// ```rust
+  /// use std::io::Cursor;
+  ///
+  /// let peekable = peekable::Peekable::new(Cursor::new([1, 2, 3, 4]));
+  /// ```
   pub fn new(reader: R) -> Self {
     Self {
       reader,
@@ -120,6 +128,14 @@ impl<R> Peekable<R> {
 
   /// Creates a new peekable wrapper around the given reader with the specified
   /// capacity for the peek buffer.
+  ///
+  /// # Examples
+  ///
+  /// ```rust
+  /// use std::io::Cursor;
+  ///
+  /// let peekable = peekable::Peekable::with_capacity(Cursor::new([0; 1024]), 1024);
+  /// ```
   pub fn with_capacity(reader: R, capacity: usize) -> Self {
     Self {
       reader,
@@ -127,9 +143,51 @@ impl<R> Peekable<R> {
     }
   }
 
+  /// Clears the peek buffer.
+  ///
+  /// # Examples
+  ///
+  /// ```rust
+  /// use std::io::Cursor;
+  ///
+  /// let mut peekable = peekable::Peekable::from(Cursor::new([1, 2, 3, 4]));
+  ///
+  /// let mut output = [0u8; 2];
+  /// let bytes = peekable.peek(&mut output).unwrap();
+  /// assert_eq!(bytes, 2);
+  /// assert_eq!(output, [1, 2]);
+  ///
+  /// let consumed = peekable.consume();
+  /// assert_eq!(consumed.as_slice(), [1, 2].as_slice());
+  ///
+  /// let mut output = [0u8; 2];
+  /// let bytes = peekable.peek(&mut output).unwrap();
+  /// assert_eq!(bytes, 2);
+  /// assert_eq!(output, [3, 4]);
+  /// ```
+  pub fn consume(&mut self) -> Buffer {
+    mem::take(&mut self.buffer)
+  }
+
   /// Returns the bytes already be peeked into memory and a mutable reference to the underlying reader.
   ///
   /// **WARNING: If you invoke `AsyncRead` or `AsyncReadExt` methods on the underlying reader, may lead to unexpected read behaviors.**
+  ///
+  /// # Examples
+  ///
+  /// ```rust
+  /// use std::io::Cursor;
+  ///
+  /// let mut peekable = peekable::Peekable::new(Cursor::new([1, 2, 3, 4]));
+  ///
+  /// let mut output = [0u8; 2];
+  /// let bytes = peekable.peek(&mut output).unwrap();
+  /// assert_eq!(bytes, 2);
+  /// assert_eq!(output, [1, 2]);
+  ///
+  /// let (peeked, reader) = peekable.get_mut();
+  /// assert_eq!(peeked, [1, 2]);
+  /// ```
   #[inline]
   pub fn get_mut(&mut self) -> (&[u8], &mut R) {
     (&self.buffer, &mut self.reader)
@@ -138,12 +196,47 @@ impl<R> Peekable<R> {
   /// Returns the bytes already be peeked into memory and a reference to the underlying reader.
   ///
   /// **WARNING: If you invoke `AsyncRead` or `AsyncReadExt` methods on the underlying reader, may lead to unexpected read behaviors.**
+  ///
+  /// # Examples
+  ///
+  /// ```rust
+  /// use std::io::Cursor;
+  ///
+  /// let mut peekable = peekable::Peekable::new(Cursor::new([1, 2, 3, 4]));
+  ///
+  /// let mut output = [0u8; 2];
+  /// let bytes = peekable.peek(&mut output).unwrap();
+  /// assert_eq!(bytes, 2);
+  /// assert_eq!(output, [1, 2]);
+  ///
+  /// let (peeked, reader) = peekable.get_ref();
+  /// assert_eq!(peeked, [1, 2]);
+  /// ```
   #[inline]
   pub fn get_ref(&self) -> (&[u8], &R) {
     (&self.buffer, &self.reader)
   }
 
   /// Consumes the `AsyncPeekable`, returning the a vec may contain the bytes already be peeked into memory and the wrapped reader.
+  ///
+  ///
+  /// # Examples
+  ///
+  /// ```rust
+  /// use std::io::Cursor;
+  ///
+  /// let mut peekable = peekable::Peekable::new(Cursor::new([1, 2, 3, 4]));
+  ///
+  /// let mut output = [0u8; 2];
+  ///
+  /// let bytes = peekable.peek(&mut output).unwrap();
+  /// assert_eq!(bytes, 2);
+  /// assert_eq!(output, [1, 2]);
+  ///
+  /// let (peeked, reader) = peekable.into_components();
+  ///
+  /// assert_eq!(peeked.as_slice(), [1, 2].as_slice());
+  /// ```
   #[inline]
   pub fn into_components(self) -> (Buffer, R) {
     (self.buffer, self.reader)
@@ -415,6 +508,11 @@ impl<R: Read> Peekable<R> {
   ///
   /// assert_eq!(bytes, 4);
   /// assert_eq!(buffer, String::from("1234"));
+  ///
+  /// // peek invalid utf-8
+  /// let mut peekable = Cursor::new([255; 4]).peekable();
+  /// let mut buffer = String::with_capacity(4);
+  /// assert!(peekable.peek_to_string(&mut buffer).is_err());
   /// # Ok(())
   /// # }
   /// ```
@@ -583,7 +681,7 @@ impl<R: Read + ?Sized> PeekExt for R {}
 #[cfg(test)]
 mod tests {
   use super::*;
-  use std::io::{Cursor, Read};
+  use std::io::Cursor;
 
   #[test]
   fn test_peek_exact_peek_exact_read_exact() {
