@@ -24,6 +24,9 @@ pub use peek_to_end::*;
 mod peek_to_string;
 pub use peek_to_string::*;
 
+mod fill_peek_buf;
+pub use fill_peek_buf::*;
+
 /// Peeks bytes from a source.
 ///
 /// This trait is analogous to the [`Peek`] trait, but integrates with
@@ -301,6 +304,34 @@ impl<R> AsyncPeekable<R> {
     core::mem::take(&mut self.buffer)
   }
 
+  /// Consumes the peek buffer in place so that the peek buffer can be reused and avoid allocating.
+  ///
+  /// # Examples
+  ///
+  /// ```rust
+  /// use peekable::tokio::AsyncPeekable;
+  ///
+  /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
+  /// let reader = std::io::Cursor::new([1, 2, 3, 4]);
+  /// let mut peekable = AsyncPeekable::from(reader);
+  ///
+  /// let mut output = [0u8; 2];
+  /// let bytes = peekable.peek(&mut output).await.unwrap();
+  /// assert_eq!(bytes, 2);
+  /// assert_eq!(output, [1, 2]);
+  ///
+  /// peekable.consume_in_place();
+  ///
+  /// let mut output = [0u8; 2];
+  /// let bytes = peekable.peek(&mut output).await.unwrap();
+  /// assert_eq!(bytes, 2);
+  /// assert_eq!(output, [3, 4]);
+  /// # });
+  /// ```
+  pub fn consume_in_place(&mut self) {
+    self.buffer.clear();
+  }
+
   /// Returns the bytes already be peeked into memory and a mutable reference to the underlying reader.
   ///
   /// **WARNING: If you invoke `AsyncRead` or `AsyncReadExt` methods on the underlying reader, may lead to unexpected read behaviors.**
@@ -388,6 +419,17 @@ pub trait AsyncPeekExt: AsyncRead {
     AsyncPeekable {
       reader: self,
       buffer: Buffer::new(),
+    }
+  }
+
+  /// Wraps a [`Read`] type in a `Peekable` which provides a `peek` related methods with a specified capacity.
+  fn peekable_with_capacity(self, capacity: usize) -> AsyncPeekable<Self>
+  where
+    Self: Sized,
+  {
+    AsyncPeekable {
+      reader: self,
+      buffer: Buffer::with_capacity(capacity),
     }
   }
 }
@@ -632,6 +674,37 @@ impl<R: AsyncRead + Unpin> AsyncPeekable<R> {
     Self: Unpin,
   {
     peek_to_string(self, dst)
+  }
+
+  /// Try to fill the peek buffer with more data. Returns the number of bytes peeked.
+  ///
+  /// # Examples
+  ///
+  /// ```rust
+  /// use std::io::Cursor;
+  /// use tokio::io::AsyncReadExt;
+  /// use peekable::tokio::AsyncPeekExt;
+  ///
+  /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
+  ///
+  /// let mut peekable = Cursor::new([1, 2, 3, 4]).peekable_with_capacity(5);
+  /// let mut output = [0u8; 4];
+  ///
+  /// peekable.peek_exact(&mut output[..1]).await.unwrap();
+  /// assert_eq!(output, [1, 0, 0, 0]);
+  ///
+  /// let bytes = peekable.fill_peek_buf().await.unwrap();
+  /// assert_eq!(bytes, 3);
+  ///
+  /// let bytes = peekable.peek(&mut output).await.unwrap();
+  /// assert_eq!(output, [1, 2, 3, 4].as_slice());
+  ///
+  /// let readed = peekable.read(&mut output).await.unwrap();
+  /// assert_eq!(readed, 4);
+  /// # });
+  /// ````
+  pub fn fill_peek_buf(&mut self) -> FillPeekBuf<'_, R> {
+    fill_peek_buf(self)
   }
 }
 

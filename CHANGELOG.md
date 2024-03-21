@@ -4,6 +4,10 @@
 
 ## RELEASED
 
+### 0.2.3 (Mar 21st, 2024)
+
+- Add `consume_in_place`, `peekable_with_capacity` and `fill_peek_buf` APIs
+
 ### 0.2.2 (Mar 21st, 2024)
 
 - Add `consume` API
