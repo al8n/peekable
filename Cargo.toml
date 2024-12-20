@@ -19,7 +19,7 @@ tokio = ["dep:tokio", "pin-project-lite", "bytes"]
 [dependencies]
 smallvec = { version = "1", optional = true }
 
-futures-util = { version = "=0.3.31", optional = true, features = ["io"] }
+futures-util = { version = ">=0.3.31", optional = true, features = ["io"] }
 pin-project-lite = { version = "0.2", optional = true }
 
 tokio = { version = "1", default-features = false, optional = true, features = ["io-util"] }
