@@ -535,13 +535,13 @@ impl<R: AsyncRead + Unpin> AsyncPeekable<R> {
   ///
   /// let mut peekable = Cursor::new([1, 2, 3, 4]).peekable();
   /// let mut output = [0u8; 5];
-
+  ///
   /// let result = peekable.peek_exact(&mut output).await;
   /// assert_eq!(
   ///   result.unwrap_err().kind(),
   ///   std::io::ErrorKind::UnexpectedEof
   /// );
-
+  ///
   /// let result = peekable.peek_exact(&mut output[..4]).await;
   /// assert!(result.is_ok());
   /// assert_eq!(output, [1, 2, 3, 4, 0]);
