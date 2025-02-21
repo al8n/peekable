@@ -5,7 +5,7 @@ use std::{
   task::{Context, Poll},
 };
 
-use futures_util::AsyncRead;
+use futures_util::{AsyncRead, AsyncWrite};
 
 use super::*;
 
@@ -192,6 +192,20 @@ impl<R: AsyncRead> AsyncRead for AsyncPeekable<R> {
     }
 
     this.reader.poll_read(cx, buf)
+  }
+}
+
+impl<W: AsyncWrite> AsyncWrite for AsyncPeekable<W> {
+  fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<()>> {
+    self.project().reader.poll_close(cx)
+  }
+
+  fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<()>> {
+    self.project().reader.poll_flush(cx)
+  }
+
+  fn poll_write(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<Result<usize>> {
+    self.project().reader.poll_write(cx, buf)
   }
 }
 

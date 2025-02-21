@@ -7,7 +7,7 @@ use std::{
 };
 
 use super::Buffer;
-use ::tokio::io::{AsyncRead, ReadBuf};
+use ::tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 mod peek;
 pub use peek::*;
@@ -178,6 +178,24 @@ impl<R: AsyncRead> AsyncRead for AsyncPeekable<R> {
     }
 
     this.reader.poll_read(cx, buf)
+  }
+}
+
+impl<W: AsyncWrite> AsyncWrite for AsyncPeekable<W> {
+  fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
+    self.project().reader.poll_flush(cx)
+  }
+
+  fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
+    self.project().reader.poll_shutdown(cx)
+  }
+
+  fn poll_write(
+    self: Pin<&mut Self>,
+    cx: &mut Context<'_>,
+    buf: &[u8],
+  ) -> Poll<Result<usize, io::Error>> {
+    self.project().reader.poll_write(cx, buf)
   }
 }
 

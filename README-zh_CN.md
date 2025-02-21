@@ -25,21 +25,21 @@ English | [简体中文][zh-cn-url]
 
   ```toml
   [dependencies]
-  peekable = "0.2"
+  peekable = "0.3"
   ```
 
 - **Tokio I/O**
 
   ```toml
   [dependencies]
-  peekable = { version = "0.2", features = ["tokio"] }
+  peekable = { version = "0.3", features = ["tokio"] }
   ```
 
 - **Futures I/O**
 
   ```toml
   [dependencies]
-  peekable = { version = "0.2", features = ["future"] }
+  peekable = { version = "0.3", features = ["future"] }
   ```
 
 ## Examples
