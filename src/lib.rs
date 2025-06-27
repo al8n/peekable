@@ -7,7 +7,7 @@
 
 use std::{
   cmp,
-  io::{IoSliceMut, Read, Result},
+  io::{IoSliceMut, Read, Result, Write},
   mem,
 };
 
@@ -97,6 +97,16 @@ impl<R: Read> Read for Peekable<R> {
     }
 
     this.reader.read(buf)
+  }
+}
+
+impl<W: Write> Write for Peekable<W> {
+  fn write(&mut self, buf: &[u8]) -> Result<usize> {
+    self.reader.write(buf)
+  }
+
+  fn flush(&mut self) -> Result<()> {
+    self.reader.flush()
   }
 }
 
