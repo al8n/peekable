@@ -5,13 +5,12 @@
 #![cfg_attr(docsrs, allow(unused_attributes))]
 #![deny(missing_docs)]
 
+use buffer::Buffer;
 use std::{
   cmp,
   io::{IoSliceMut, Read, Result, Write},
   mem,
 };
-
-pub use buffer::Buffer;
 
 #[doc(hidden)]
 #[cfg(feature = "smallvec")]
@@ -57,7 +56,8 @@ pub mod future;
 #[cfg_attr(docsrs, doc(cfg(feature = "tokio")))]
 pub mod tokio;
 
-mod buffer;
+/// The generic buffer trait used by the `Peekable` and `AsyncPeekable`.
+pub mod buffer;
 
 /// A wrapper around an [`Read`] types to make them support peek related methods.
 pub struct Peekable<R, B = DefaultBuffer> {
