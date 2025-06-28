@@ -1,4 +1,4 @@
-use super::AsyncPeekable;
+use super::{AsyncPeekable, Buffer, DefaultBuffer};
 use ::tokio::io::{AsyncRead, AsyncReadExt};
 
 use pin_project_lite::pin_project;
@@ -12,8 +12,8 @@ pin_project! {
   /// Future for the [`peek_to_string`](super::AsyncPeekExt::peek_to_string) method.
   #[derive(Debug)]
   #[must_use = "futures do nothing unless you `.await` or poll them"]
-  pub struct PeekToString<'a, R> {
-    peekable: &'a mut AsyncPeekable<R>,
+  pub struct PeekToString<'a, R, B = DefaultBuffer> {
+    peekable: &'a mut AsyncPeekable<R, B>,
     // This is the buffer we were provided. It will be replaced with an empty string
     // while reading to postpone utf-8 handling until after reading.
     output: &'a mut String,
@@ -23,10 +23,10 @@ pin_project! {
   }
 }
 
-pub(crate) fn peek_to_string<'a, R>(
-  peekable: &'a mut AsyncPeekable<R>,
+pub(crate) fn peek_to_string<'a, R, B>(
+  peekable: &'a mut AsyncPeekable<R, B>,
   string: &'a mut String,
-) -> PeekToString<'a, R>
+) -> PeekToString<'a, R, B>
 where
   R: AsyncRead + Unpin,
 {
@@ -37,16 +37,17 @@ where
   }
 }
 
-impl<A> Future for PeekToString<'_, A>
+impl<A, B> Future for PeekToString<'_, A, B>
 where
   A: AsyncRead + Unpin,
+  B: Buffer,
 {
   type Output = io::Result<usize>;
 
   fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
     let me = self.project();
 
-    let s = match core::str::from_utf8(&me.peekable.buffer) {
+    let s = match core::str::from_utf8(me.peekable.buffer.as_slice()) {
       Ok(s) => s,
       Err(e) => return Poll::Ready(Err(io::Error::new(io::ErrorKind::InvalidData, e))),
     };
@@ -60,13 +61,13 @@ where
       Poll::Ready(Ok(read)) => {
         me.peekable
           .buffer
-          .extend_from_slice(&me.output.as_bytes()[original_buf_len + peek_buf_len..]);
+          .extend_from_slice(&me.output.as_bytes()[original_buf_len + peek_buf_len..])?;
         Poll::Ready(Ok(peek_buf_len + read))
       }
       Poll::Ready(Err(e)) => {
         me.peekable
           .buffer
-          .extend_from_slice(&me.output.as_bytes()[original_buf_len + peek_buf_len..]);
+          .extend_from_slice(&me.output.as_bytes()[original_buf_len + peek_buf_len..])?;
         Poll::Ready(Err(e))
       }
       Poll::Pending => Poll::Pending,

@@ -6,17 +6,17 @@ use std::marker::PhantomPinned;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-use super::AsyncPeekable;
+use super::{AsyncPeekable, Buffer, DefaultBuffer};
 
 /// A future which can be used to easily read exactly enough bytes to fill
 /// a buffer.
 ///
 /// Created by the [`AsyncPeekExt::peek_exact`][peek_exact].
 /// [peek_exact]: [super::AsyncPeekExt::peek_exact]
-pub(crate) fn peek_exact<'a, A>(
-  peekable: &'a mut AsyncPeekable<A>,
+pub(crate) fn peek_exact<'a, A, B>(
+  peekable: &'a mut AsyncPeekable<A, B>,
   buf: &'a mut [u8],
-) -> PeekExact<'a, A>
+) -> PeekExact<'a, A, B>
 where
   A: AsyncRead + Unpin,
 {
@@ -34,8 +34,8 @@ pin_project! {
   /// On success the number of bytes is returned
   #[derive(Debug)]
   #[must_use = "futures do nothing unless you `.await` or poll them"]
-  pub struct PeekExact<'a, A> {
-    peekable: &'a mut AsyncPeekable<A>,
+  pub struct PeekExact<'a, A, B = DefaultBuffer> {
+    peekable: &'a mut AsyncPeekable<A, B>,
     buf: ReadBuf<'a>,
     // Make this future `!Unpin` for compatibility with async trait methods.
     #[pin]
@@ -47,9 +47,10 @@ fn eof() -> io::Error {
   io::Error::new(io::ErrorKind::UnexpectedEof, "early eof")
 }
 
-impl<A> Future for PeekExact<'_, A>
+impl<A, B> Future for PeekExact<'_, A, B>
 where
   A: AsyncRead + Unpin,
+  B: Buffer,
 {
   type Output = io::Result<usize>;
 
@@ -60,11 +61,11 @@ where
     let peek_buf_len = me.peekable.buffer.len();
 
     if buf_len <= peek_buf_len {
-      me.buf.put_slice(&me.peekable.buffer[..buf_len]);
+      me.buf.put_slice(&me.peekable.buffer.as_slice()[..buf_len]);
       return Poll::Ready(Ok(buf_len));
     }
 
-    me.buf.put_slice(&me.peekable.buffer);
+    me.buf.put_slice(me.peekable.buffer.as_slice());
     let mut readed = me.peekable.buffer.len();
 
     while me.buf.remaining() != 0 {
@@ -75,7 +76,7 @@ where
       readed += n;
       me.peekable
         .buffer
-        .extend_from_slice(&me.buf.filled()[before..after]);
+        .extend_from_slice(&me.buf.filled()[before..after])?;
 
       if n == 0 && readed != buf_len {
         return Err(eof()).into();
