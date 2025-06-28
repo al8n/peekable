@@ -776,7 +776,7 @@ pub trait AsyncPeekExt: AsyncRead {
   where
     Self: Sized,
   {
-    AsyncPeekable::new(self)
+    AsyncPeekable::from(self)
   }
 
   /// Wraps a [`AsyncRead`] type in a `AsyncPeekable` which provides a `peek` related methods with a specified capacity.
@@ -784,7 +784,7 @@ pub trait AsyncPeekExt: AsyncRead {
   where
     Self: Sized,
   {
-    AsyncPeekable::with_capacity(self, capacity)
+    AsyncPeekable::from((capacity, self))
   }
 
   /// Creates a new `AsyncPeekable` which will wrap the given reader.

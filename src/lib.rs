@@ -825,7 +825,7 @@ pub trait PeekExt: Read {
   where
     Self: Sized,
   {
-    Peekable::new(self)
+    Peekable::from(self)
   }
 
   /// Wraps a [`Read`] type in a `Peekable` which provides a `peek` related methods with a specified capacity.
@@ -833,7 +833,7 @@ pub trait PeekExt: Read {
   where
     Self: Sized,
   {
-    Peekable::with_capacity(self, capacity)
+    Peekable::from((capacity, self))
   }
 
   /// Creates a new `Peekable` which will wrap the given reader.

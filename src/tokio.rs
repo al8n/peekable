@@ -509,11 +509,7 @@ pub trait AsyncPeekExt: AsyncRead {
   where
     Self: Sized,
   {
-    AsyncPeekable {
-      reader: self,
-      buffer: DefaultBuffer::new(),
-      buf_cap: None,
-    }
+    AsyncPeekable::from(self)
   }
 
   /// Wraps a [`Read`] type in a `Peekable` which provides a `peek` related methods with a specified capacity.
@@ -521,11 +517,7 @@ pub trait AsyncPeekExt: AsyncRead {
   where
     Self: Sized,
   {
-    AsyncPeekable {
-      reader: self,
-      buffer: DefaultBuffer::with_capacity(capacity),
-      buf_cap: Some(capacity),
-    }
+    AsyncPeekable::from((capacity, self))
   }
 
   /// Creates a new `AsyncPeekable` which will wrap the given reader.
@@ -536,11 +528,7 @@ pub trait AsyncPeekExt: AsyncRead {
     Self: Sized,
     B: Buffer,
   {
-    AsyncPeekable {
-      reader: self,
-      buffer: B::new(),
-      buf_cap: None,
-    }
+    AsyncPeekable::with_buffer(self)
   }
 
   /// Wraps a [`AsyncRead`] type in a `AsyncPeekable` which provides a `peek` related methods with a specified capacity.
@@ -551,11 +539,7 @@ pub trait AsyncPeekExt: AsyncRead {
     Self: Sized,
     B: Buffer,
   {
-    AsyncPeekable {
-      reader: self,
-      buffer: B::with_capacity(capacity),
-      buf_cap: Some(capacity),
-    }
+    AsyncPeekable::with_capacity_and_buffer(self, capacity)
   }
 }
 
