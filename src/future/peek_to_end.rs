@@ -1,6 +1,6 @@
 use futures_util::{AsyncRead, AsyncReadExt, FutureExt};
 
-use super::AsyncPeekable;
+use super::{AsyncPeekable, Buffer, DefaultBuffer};
 use std::{
   future::Future,
   io,
@@ -11,22 +11,23 @@ use std::{
 /// Future for the [`peek_to_end`](super::AsyncPeekable::peek_to_end) method.
 #[derive(Debug)]
 #[must_use = "futures do nothing unless you `.await` or poll them"]
-pub struct PeekToEnd<'a, P> {
-  peekable: &'a mut AsyncPeekable<P>,
+pub struct PeekToEnd<'a, P, B = DefaultBuffer> {
+  peekable: &'a mut AsyncPeekable<P, B>,
   buf: &'a mut Vec<u8>,
 }
 
-impl<P: Unpin> Unpin for PeekToEnd<'_, P> {}
+impl<P: Unpin, B> Unpin for PeekToEnd<'_, P, B> {}
 
-impl<'a, P: AsyncRead + Unpin> PeekToEnd<'a, P> {
-  pub(super) fn new(peekable: &'a mut AsyncPeekable<P>, buf: &'a mut Vec<u8>) -> Self {
+impl<'a, P: AsyncRead + Unpin, B> PeekToEnd<'a, P, B> {
+  pub(super) fn new(peekable: &'a mut AsyncPeekable<P, B>, buf: &'a mut Vec<u8>) -> Self {
     Self { peekable, buf }
   }
 }
 
-impl<A> Future for PeekToEnd<'_, A>
+impl<A, B> Future for PeekToEnd<'_, A, B>
 where
   A: AsyncRead + Unpin,
+  B: Buffer,
 {
   type Output = io::Result<usize>;
 
@@ -35,7 +36,7 @@ where
     let inbuf = this.peekable.buffer.len();
 
     let original_buf_len = this.buf.len();
-    this.buf.extend_from_slice(&this.peekable.buffer);
+    this.buf.extend_from_slice(this.peekable.buffer.as_slice());
 
     let mut fut = this.peekable.reader.read_to_end(this.buf);
     match fut.poll_unpin(cx) {
@@ -43,14 +44,14 @@ where
         this
           .peekable
           .buffer
-          .extend_from_slice(&this.buf[original_buf_len + inbuf..]);
+          .extend_from_slice(&this.buf[original_buf_len + inbuf..])?;
         Poll::Ready(Ok(read + inbuf))
       }
       Poll::Ready(Err(e)) => {
         this
           .peekable
           .buffer
-          .extend_from_slice(&this.buf[original_buf_len + inbuf..]);
+          .extend_from_slice(&this.buf[original_buf_len + inbuf..])?;
         Poll::Ready(Err(e))
       }
       Poll::Pending => Poll::Pending,

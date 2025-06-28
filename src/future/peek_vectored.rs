@@ -1,6 +1,6 @@
 use futures_util::{io::IoSliceMut, AsyncRead};
 
-use super::{AsyncPeek, AsyncPeekable};
+use super::{AsyncPeek, AsyncPeekable, Buffer, DefaultBuffer};
 use std::{
   future::Future,
   io,
@@ -11,20 +11,20 @@ use std::{
 /// Future for the [`peek_vectored`](AsyncPeekable::peek_vectored) method.
 #[derive(Debug)]
 #[must_use = "futures do nothing unless you `.await` or poll them"]
-pub struct PeekVectored<'a, R> {
-  peekable: &'a mut AsyncPeekable<R>,
+pub struct PeekVectored<'a, R, B = DefaultBuffer> {
+  peekable: &'a mut AsyncPeekable<R, B>,
   bufs: &'a mut [IoSliceMut<'a>],
 }
 
-impl<R: Unpin> Unpin for PeekVectored<'_, R> {}
+impl<R: Unpin, B> Unpin for PeekVectored<'_, R, B> {}
 
-impl<'a, R: AsyncRead + Unpin> PeekVectored<'a, R> {
-  pub(super) fn new(peekable: &'a mut AsyncPeekable<R>, bufs: &'a mut [IoSliceMut<'a>]) -> Self {
+impl<'a, R: AsyncRead + Unpin, B> PeekVectored<'a, R, B> {
+  pub(super) fn new(peekable: &'a mut AsyncPeekable<R, B>, bufs: &'a mut [IoSliceMut<'a>]) -> Self {
     Self { peekable, bufs }
   }
 }
 
-impl<R: AsyncRead + Unpin> Future for PeekVectored<'_, R> {
+impl<R: AsyncRead + Unpin, B: Buffer> Future for PeekVectored<'_, R, B> {
   type Output = io::Result<usize>;
 
   fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {

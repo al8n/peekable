@@ -7,14 +7,14 @@ use std::marker::PhantomPinned;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-use super::AsyncPeekable;
+use super::{AsyncPeekable, Buffer, DefaultBuffer};
 
 pin_project! {
   /// Peek to end
   #[derive(Debug)]
   #[must_use = "futures do nothing unless you `.await` or poll them"]
-  pub struct PeekToEnd<'a, R> {
-    peekable: &'a mut AsyncPeekable<R>,
+  pub struct PeekToEnd<'a, R, B = DefaultBuffer> {
+    peekable: &'a mut AsyncPeekable<R, B>,
     buf: &'a mut Vec<u8>,
     // Make this future `!Unpin` for compatibility with async trait methods.
     #[pin]
@@ -22,10 +22,10 @@ pin_project! {
   }
 }
 
-pub(crate) fn peek_to_end<'a, R>(
-  peekable: &'a mut AsyncPeekable<R>,
+pub(crate) fn peek_to_end<'a, R, B>(
+  peekable: &'a mut AsyncPeekable<R, B>,
   buffer: &'a mut Vec<u8>,
-) -> PeekToEnd<'a, R>
+) -> PeekToEnd<'a, R, B>
 where
   R: AsyncRead + Unpin,
 {
@@ -36,9 +36,10 @@ where
   }
 }
 
-impl<A> Future for PeekToEnd<'_, A>
+impl<A, B> Future for PeekToEnd<'_, A, B>
 where
   A: AsyncRead + Unpin,
+  B: Buffer,
 {
   type Output = io::Result<usize>;
 
@@ -47,7 +48,7 @@ where
 
     let original_buf_len: usize = me.buf.len();
     let peek_buf_len = me.peekable.buffer.len();
-    me.buf.extend_from_slice(&me.peekable.buffer);
+    me.buf.extend_from_slice(me.peekable.buffer.as_slice());
 
     let fut = me.peekable.reader.read_to_end(me.buf);
     tokio::pin!(fut);
@@ -55,13 +56,13 @@ where
       Poll::Ready(Ok(read)) => {
         me.peekable
           .buffer
-          .extend_from_slice(&me.buf[original_buf_len + peek_buf_len..]);
+          .extend_from_slice(&me.buf[original_buf_len + peek_buf_len..])?;
         Poll::Ready(Ok(peek_buf_len + read))
       }
       Poll::Ready(Err(e)) => {
         me.peekable
           .buffer
-          .extend_from_slice(&me.buf[original_buf_len + peek_buf_len..]);
+          .extend_from_slice(&me.buf[original_buf_len + peek_buf_len..])?;
         Poll::Ready(Err(e))
       }
       Poll::Pending => Poll::Pending,

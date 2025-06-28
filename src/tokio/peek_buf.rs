@@ -1,4 +1,4 @@
-use super::{AsyncPeek, AsyncPeekable, AsyncRead};
+use super::{AsyncPeek, AsyncPeekable, AsyncRead, Buffer, DefaultBuffer};
 
 use bytes::BufMut;
 use pin_project_lite::pin_project;
@@ -8,10 +8,10 @@ use std::marker::PhantomPinned;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-pub(crate) fn peek_buf<'a, R, B>(
-  peeker: &'a mut AsyncPeekable<R>,
+pub(crate) fn peek_buf<'a, R, B, BUF>(
+  peeker: &'a mut AsyncPeekable<R, BUF>,
   buf: &'a mut B,
-) -> PeekBuf<'a, R, B>
+) -> PeekBuf<'a, R, B, BUF>
 where
   R: AsyncRead + Unpin,
   B: BufMut + ?Sized,
@@ -27,18 +27,19 @@ pin_project! {
   /// Future returned by [`peek_buf`](crate::io::AsyncReadExt::peek_buf).
   #[derive(Debug)]
   #[must_use = "futures do nothing unless you `.await` or poll them"]
-  pub struct PeekBuf<'a, R, B: ?Sized> {
-    peeker: &'a mut AsyncPeekable<R>,
+  pub struct PeekBuf<'a, R, B: ?Sized, BUF = DefaultBuffer> {
+    peeker: &'a mut AsyncPeekable<R, BUF>,
     buf: &'a mut B,
     #[pin]
     _pin: PhantomPinned,
   }
 }
 
-impl<R, B> Future for PeekBuf<'_, R, B>
+impl<R, B, BUF> Future for PeekBuf<'_, R, B, BUF>
 where
   R: AsyncRead + Unpin,
   B: BufMut + ?Sized,
+  BUF: Buffer,
 {
   type Output = io::Result<usize>;
 

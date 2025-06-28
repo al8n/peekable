@@ -11,13 +11,15 @@ use std::{
   mem,
 };
 
+pub use buffer::Buffer;
+
 #[doc(hidden)]
 #[cfg(feature = "smallvec")]
-pub type Buffer = smallvec::SmallVec<[u8; 64]>;
+pub type DefaultBuffer = smallvec::SmallVec<[u8; 64]>;
 
 #[doc(hidden)]
 #[cfg(not(feature = "smallvec"))]
-pub type Buffer = Vec<u8>;
+pub type DefaultBuffer = Vec<u8>;
 
 /// Extracts the successful type of a `Poll<T>`.
 ///
@@ -55,35 +57,43 @@ pub mod future;
 #[cfg_attr(docsrs, doc(cfg(feature = "tokio")))]
 pub mod tokio;
 
+mod buffer;
+
 /// A wrapper around an [`Read`] types to make them support peek related methods.
-pub struct Peekable<R> {
+pub struct Peekable<R, B = DefaultBuffer> {
   /// The inner reader.
   reader: R,
   /// The buffer used to store peeked bytes.
-  buffer: Buffer,
+  buffer: B,
+  buf_cap: Option<usize>,
 }
 
-impl<R: Read> Read for Peekable<R> {
+impl<R, B> Read for Peekable<R, B>
+where
+  B: buffer::Buffer,
+  R: Read,
+{
   fn read(&mut self, mut buf: &mut [u8]) -> Result<usize> {
     let this = self;
     let want_peek = buf.len();
+    let peek_buf = this.buffer.as_mut_slice();
 
     // check if the peek buffer has data
-    let buffer_len = this.buffer.len();
+    let buffer_len = peek_buf.len();
     if buffer_len > 0 {
       return match want_peek.cmp(&buffer_len) {
         cmp::Ordering::Less => {
-          buf.copy_from_slice(&this.buffer[..want_peek]);
-          this.buffer.drain(..want_peek);
+          buf.copy_from_slice(&peek_buf[..want_peek]);
+          this.buffer.consume(..want_peek);
           return Ok(want_peek);
         }
         cmp::Ordering::Equal => {
-          buf.copy_from_slice(&this.buffer);
+          buf.copy_from_slice(peek_buf);
           this.buffer.clear();
           return Ok(want_peek);
         }
         cmp::Ordering::Greater => {
-          buf[..buffer_len].copy_from_slice(&this.buffer);
+          buf[..buffer_len].copy_from_slice(peek_buf);
           buf = &mut buf[buffer_len..];
           match this.reader.read(buf) {
             Ok(bytes) => {
@@ -100,7 +110,11 @@ impl<R: Read> Read for Peekable<R> {
   }
 }
 
-impl<W: Write> Write for Peekable<W> {
+impl<W, B> Write for Peekable<W, B>
+where
+  W: Write,
+  B: Buffer,
+{
   fn write(&mut self, buf: &[u8]) -> Result<usize> {
     self.reader.write(buf)
   }
@@ -112,10 +126,13 @@ impl<W: Write> Write for Peekable<W> {
 
 impl<R> From<R> for Peekable<R> {
   fn from(reader: R) -> Self {
-    Peekable {
-      reader,
-      buffer: Buffer::new(),
-    }
+    Peekable::new(reader)
+  }
+}
+
+impl<R> From<(usize, R)> for Peekable<R> {
+  fn from((cap, reader): (usize, R)) -> Self {
+    Peekable::with_capacity(reader, cap)
   }
 }
 
@@ -132,7 +149,8 @@ impl<R> Peekable<R> {
   pub fn new(reader: R) -> Self {
     Self {
       reader,
-      buffer: Buffer::new(),
+      buffer: DefaultBuffer::new(),
+      buf_cap: None,
     }
   }
 
@@ -149,7 +167,54 @@ impl<R> Peekable<R> {
   pub fn with_capacity(reader: R, capacity: usize) -> Self {
     Self {
       reader,
-      buffer: Buffer::with_capacity(capacity),
+      buffer: DefaultBuffer::with_capacity(capacity),
+      buf_cap: Some(capacity),
+    }
+  }
+}
+
+impl<R, B> Peekable<R, B> {
+  /// Creates a new peekable wrapper around the given reader.
+  /// This method allows you to specify a custom buffer type.
+  ///
+  /// # Examples
+  ///
+  /// ```rust
+  /// use std::{io::Cursor, vec::Vec};
+  /// use peekable::Peekable;
+  ///
+  /// let peekable: Peekable<_, Vec<u8>> = Peekable::with_buffer(Cursor::new([1, 2, 3, 4]));
+  /// ```
+  pub fn with_buffer(reader: R) -> Self
+  where
+    B: Buffer,
+  {
+    Self {
+      reader,
+      buffer: B::new(),
+      buf_cap: None,
+    }
+  }
+
+  /// Creates a new peekable wrapper around the given reader with the specified
+  /// capacity for the peek buffer, this method allows you to specify a custom buffer type.
+  ///
+  /// # Examples
+  ///
+  /// ```rust
+  /// use std::{io::Cursor, vec::Vec};
+  /// use peekable::Peekable;
+  ///
+  /// let peekable: Peekable<_, Vec<u8>>  = Peekable::with_capacity_and_buffer(Cursor::new([0; 1024]), 1024);
+  /// ```
+  pub fn with_capacity_and_buffer(reader: R, capacity: usize) -> Self
+  where
+    B: Buffer,
+  {
+    Self {
+      reader,
+      buffer: B::with_capacity(capacity),
+      buf_cap: Some(capacity),
     }
   }
 
@@ -159,8 +224,9 @@ impl<R> Peekable<R> {
   ///
   /// ```rust
   /// use std::io::Cursor;
+  /// use peekable::Peekable;
   ///
-  /// let mut peekable = peekable::Peekable::from(Cursor::new([1, 2, 3, 4]));
+  /// let mut peekable: Peekable<_> = Peekable::from(Cursor::new([1, 2, 3, 4]));
   ///
   /// let mut output = [0u8; 2];
   /// let bytes = peekable.peek(&mut output).unwrap();
@@ -176,8 +242,15 @@ impl<R> Peekable<R> {
   /// assert_eq!(output, [3, 4]);
   /// ```
   #[inline]
-  pub fn consume(&mut self) -> Buffer {
-    mem::take(&mut self.buffer)
+  pub fn consume(&mut self) -> B
+  where
+    B: Buffer,
+  {
+    let buf = match self.buf_cap {
+      Some(capacity) => B::with_capacity(capacity),
+      None => B::new(),
+    };
+    mem::replace(&mut self.buffer, buf)
   }
 
   /// Consumes the peek buffer in place so that the peek buffer can be reused and avoid allocating.
@@ -186,8 +259,9 @@ impl<R> Peekable<R> {
   ///
   /// ```rust
   /// use std::io::Cursor;
+  /// use peekable::Peekable;
   ///
-  /// let mut peekable = peekable::Peekable::from(Cursor::new([1, 2, 3, 4]));
+  /// let mut peekable: Peekable<_> = Peekable::from(Cursor::new([1, 2, 3, 4]));
   ///
   /// let mut output = [0u8; 2];
   /// let bytes = peekable.peek(&mut output).unwrap();
@@ -202,7 +276,10 @@ impl<R> Peekable<R> {
   /// assert_eq!(output, [3, 4]);
   /// ```
   #[inline]
-  pub fn consume_in_place(&mut self) {
+  pub fn consume_in_place(&mut self)
+  where
+    B: Buffer,
+  {
     self.buffer.clear();
   }
 
@@ -226,8 +303,11 @@ impl<R> Peekable<R> {
   /// assert_eq!(peeked, [1, 2]);
   /// ```
   #[inline]
-  pub fn get_mut(&mut self) -> (&[u8], &mut R) {
-    (&self.buffer, &mut self.reader)
+  pub fn get_mut(&mut self) -> (&[u8], &mut R)
+  where
+    B: AsRef<[u8]>,
+  {
+    (self.buffer.as_ref(), &mut self.reader)
   }
 
   /// Returns the bytes already be peeked into memory and a reference to the underlying reader.
@@ -250,8 +330,11 @@ impl<R> Peekable<R> {
   /// assert_eq!(peeked, [1, 2]);
   /// ```
   #[inline]
-  pub fn get_ref(&self) -> (&[u8], &R) {
-    (&self.buffer, &self.reader)
+  pub fn get_ref(&self) -> (&[u8], &R)
+  where
+    B: AsRef<[u8]>,
+  {
+    (self.buffer.as_ref(), &self.reader)
   }
 
   /// Consumes the `AsyncPeekable`, returning the a vec may contain the bytes already be peeked into memory and the wrapped reader.
@@ -275,12 +358,16 @@ impl<R> Peekable<R> {
   /// assert_eq!(peeked.as_slice(), [1, 2].as_slice());
   /// ```
   #[inline]
-  pub fn into_components(self) -> (Buffer, R) {
+  pub fn into_components(self) -> (B, R) {
     (self.buffer, self.reader)
   }
 }
 
-impl<R: Read> Peekable<R> {
+impl<R, B> Peekable<R, B>
+where
+  B: Buffer,
+  R: Read,
+{
   /// Pull some bytes from this source into the specified buffer, returning
   /// how many bytes were peeked.
   ///
@@ -391,20 +478,22 @@ impl<R: Read> Peekable<R> {
     if buffer_len > 0 {
       return match want_peek.cmp(&buffer_len) {
         cmp::Ordering::Less => {
-          buf.copy_from_slice(&self.buffer[..want_peek]);
+          buf.copy_from_slice(&self.buffer.as_slice()[..want_peek]);
           Ok(want_peek)
         }
         cmp::Ordering::Equal => {
-          buf.copy_from_slice(&self.buffer);
+          buf.copy_from_slice(self.buffer.as_slice());
           Ok(want_peek)
         }
         cmp::Ordering::Greater => {
-          let this = self;
-          this.buffer.resize(want_peek, 0);
-          match this.reader.read(&mut this.buffer[buffer_len..]) {
+          self.buffer.resize(want_peek)?;
+          match self
+            .reader
+            .read(&mut self.buffer.as_mut_slice()[buffer_len..])
+          {
             Ok(n) => {
-              this.buffer.truncate(n + buffer_len);
-              buf[..buffer_len + n].copy_from_slice(&this.buffer);
+              self.buffer.truncate(n + buffer_len);
+              buf[..buffer_len + n].copy_from_slice(self.buffer.as_slice());
               Ok(buffer_len + n)
             }
             Err(e) => Err(e),
@@ -416,7 +505,7 @@ impl<R: Read> Peekable<R> {
     let this = self;
     match this.reader.read(buf) {
       Ok(bytes) => {
-        this.buffer.extend_from_slice(&buf[..bytes]);
+        this.buffer.extend_from_slice(&buf[..bytes])?;
         Ok(bytes)
       }
       Err(e) => Err(e),
@@ -495,12 +584,14 @@ impl<R: Read> Peekable<R> {
     let inbuf = this.buffer.len();
 
     let original_buf = buf.len();
-    buf.extend_from_slice(&this.buffer);
+    buf.extend_from_slice(this.buffer.as_slice());
 
     let fut = this.reader.read_to_end(buf);
     match fut {
       Ok(read) => {
-        this.buffer.extend_from_slice(&buf[original_buf + inbuf..]);
+        this
+          .buffer
+          .extend_from_slice(&buf[original_buf + inbuf..])?;
         Ok(read + inbuf)
       }
       Err(e) => Err(e),
@@ -554,7 +645,7 @@ impl<R: Read> Peekable<R> {
   /// # }
   /// ```
   pub fn peek_to_string(&mut self, buf: &mut String) -> Result<usize> {
-    let s = match core::str::from_utf8(&self.buffer) {
+    let s = match core::str::from_utf8(self.buffer.as_slice()) {
       Ok(s) => s,
       Err(_) => {
         return Err(std::io::Error::new(
@@ -570,7 +661,7 @@ impl<R: Read> Peekable<R> {
     let fut = self.reader.read_to_string(buf);
     match fut {
       Ok(read) => {
-        self.buffer.extend_from_slice(&buf.as_bytes()[inbuf..]);
+        self.buffer.extend_from_slice(&buf.as_bytes()[inbuf..])?;
         Ok(read + inbuf)
       }
       Err(e) => Err(e),
@@ -670,11 +761,11 @@ impl<R: Read> Peekable<R> {
     let peek_buf_len = this.buffer.len();
 
     if buf_len <= peek_buf_len {
-      buf.copy_from_slice(&this.buffer[..buf_len]);
+      buf.copy_from_slice(&this.buffer.as_slice()[..buf_len]);
       return Ok(());
     }
 
-    buf[..peek_buf_len].copy_from_slice(&this.buffer);
+    buf[..peek_buf_len].copy_from_slice(this.buffer.as_slice());
     {
       let (_read, rest) = mem::take(&mut buf).split_at_mut(peek_buf_len);
       buf = rest;
@@ -684,7 +775,7 @@ impl<R: Read> Peekable<R> {
       let n = this.reader.read(buf)?;
       {
         let (read, rest) = mem::take(&mut buf).split_at_mut(n);
-        this.buffer.extend_from_slice(read);
+        this.buffer.extend_from_slice(read)?;
         readed += n;
         buf = rest;
       }
@@ -720,8 +811,8 @@ impl<R: Read> Peekable<R> {
   pub fn fill_peek_buf(&mut self) -> Result<usize> {
     let cap = self.buffer.capacity();
     let cur = self.buffer.len();
-    self.buffer.resize(cap, 0);
-    let peeked = self.reader.read(&mut self.buffer[cur..])?;
+    self.buffer.resize(cap)?;
+    let peeked = self.reader.read(&mut self.buffer.as_mut_slice()[cur..])?;
     self.buffer.truncate(cur + peeked);
     Ok(peeked)
   }
@@ -734,10 +825,7 @@ pub trait PeekExt: Read {
   where
     Self: Sized,
   {
-    Peekable {
-      reader: self,
-      buffer: Buffer::new(),
-    }
+    Peekable::new(self)
   }
 
   /// Wraps a [`Read`] type in a `Peekable` which provides a `peek` related methods with a specified capacity.
@@ -745,10 +833,29 @@ pub trait PeekExt: Read {
   where
     Self: Sized,
   {
-    Peekable {
-      reader: self,
-      buffer: Buffer::with_capacity(capacity),
-    }
+    Peekable::with_capacity(self, capacity)
+  }
+
+  /// Creates a new `Peekable` which will wrap the given reader.
+  ///
+  /// This method allows you to specify a custom buffer type.
+  fn peekable_with_buffer<B>(self) -> Peekable<Self, B>
+  where
+    Self: Sized,
+    B: Buffer,
+  {
+    Peekable::with_buffer(self)
+  }
+
+  /// Wraps a [`Read`] type in a `Peekable` which provides a `peek` related methods with a specified capacity.
+  ///
+  /// This method allows you to specify a custom buffer type.
+  fn peekable_with_capacity_and_buffer<B>(self, capacity: usize) -> Peekable<Self, B>
+  where
+    Self: Sized,
+    B: Buffer,
+  {
+    Peekable::with_capacity_and_buffer(self, capacity)
   }
 }
 
@@ -762,6 +869,39 @@ mod tests {
   #[test]
   fn test_peek_exact_peek_exact_read_exact() {
     let mut peekable = Cursor::new([1, 2, 3, 4, 5, 6, 7, 8, 9]).peekable();
+    let mut buf1 = [0; 2];
+    peekable.peek_exact(&mut buf1).unwrap();
+    assert_eq!(buf1, [1, 2]);
+
+    let mut buf2 = [0; 4];
+    peekable.peek_exact(&mut buf2).unwrap();
+    assert_eq!(buf2, [1, 2, 3, 4]);
+
+    let mut buf3 = [0; 4];
+    peekable.read_exact(&mut buf3).unwrap();
+    assert_eq!(buf3, [1, 2, 3, 4]);
+  }
+
+  #[test]
+  fn test_peek_exact_peek_exact_read_exact_2() {
+    let mut peekable = Cursor::new([1, 2, 3, 4, 5, 6, 7, 8, 9]).peekable_with_buffer::<Vec<u8>>();
+    let mut buf1 = [0; 2];
+    peekable.peek_exact(&mut buf1).unwrap();
+    assert_eq!(buf1, [1, 2]);
+
+    let mut buf2 = [0; 4];
+    peekable.peek_exact(&mut buf2).unwrap();
+    assert_eq!(buf2, [1, 2, 3, 4]);
+
+    let mut buf3 = [0; 4];
+    peekable.read_exact(&mut buf3).unwrap();
+    assert_eq!(buf3, [1, 2, 3, 4]);
+  }
+
+  #[test]
+  fn test_peek_exact_peek_exact_read_exact_3() {
+    let mut peekable =
+      Cursor::new([1, 2, 3, 4, 5, 6, 7, 8, 9]).peekable_with_capacity_and_buffer::<Vec<u8>>(24);
     let mut buf1 = [0; 2];
     peekable.peek_exact(&mut buf1).unwrap();
     assert_eq!(buf1, [1, 2]);
