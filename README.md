@@ -17,6 +17,16 @@ Peekable reader and async reader, which enhance your network programming experie
 
 </div>
 
+## Introduction
+
+In network programming, applications frequently need to inspect incoming data before fully consuming it. Common patterns include reading message type indicators, parsing length-prefixed headers, or implementing protocol detection. However, current peek solutions have significant limitations:
+
+**System call-based approaches** like `std::net::TcpStream::peek` and `tokio::net::TcpStream::peek` directly invoke system calls for each peek operation. While functionally correct, these methods impose unnecessary overhead since system calls are expensive operations that should be minimized in performance-critical network code.
+
+**Buffered reader workarounds** involve wrapping streams with `BufReader` and using methods like `fill_buf()` and `buffer()` to simulate peeking behavior. This approach is cumbersome and inefficient—`BufReader` uses a heap-allocated `Vec<u8>` as its internal buffer, which is overkill for typical peek scenarios where you only need to examine a few bytes (often 1-8 bytes for headers or type tags).
+
+**`peekable` provides a better solution**: a lightweight, efficient peek implementation for both synchronous and asynchronous readers.
+
 ## Installation
 
 - **Std**
