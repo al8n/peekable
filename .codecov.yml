@@ -2,7 +2,8 @@ codecov:
   require_ci_to_pass: false
 
 ignore:
-  - "src/buffer.rs"
+  - tests/* # Ignore all files in the tests directory
+  - examples/* # Ignore all files in the examples directory
 
 coverage:
   status:

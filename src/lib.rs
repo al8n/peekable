@@ -1,6 +1,4 @@
-//! Peakable peeker and async peeker
-//!
-//!
+#![doc = include_str!("../README.md")]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![cfg_attr(docsrs, allow(unused_attributes))]
 #![deny(missing_docs)]
@@ -115,22 +113,26 @@ where
   W: Write,
   B: Buffer,
 {
+  #[cfg_attr(not(tarpaulin), inline(always))]
   fn write(&mut self, buf: &[u8]) -> Result<usize> {
     self.reader.write(buf)
   }
 
+  #[cfg_attr(not(tarpaulin), inline(always))]
   fn flush(&mut self) -> Result<()> {
     self.reader.flush()
   }
 }
 
 impl<R> From<R> for Peekable<R> {
+  #[cfg_attr(not(tarpaulin), inline(always))]
   fn from(reader: R) -> Self {
     Peekable::new(reader)
   }
 }
 
 impl<R> From<(usize, R)> for Peekable<R> {
+  #[cfg_attr(not(tarpaulin), inline(always))]
   fn from((cap, reader): (usize, R)) -> Self {
     Peekable::with_capacity(reader, cap)
   }
@@ -146,12 +148,9 @@ impl<R> Peekable<R> {
   ///
   /// let peekable = peekable::Peekable::new(Cursor::new([1, 2, 3, 4]));
   /// ```
+  #[cfg_attr(not(tarpaulin), inline(always))]
   pub fn new(reader: R) -> Self {
-    Self {
-      reader,
-      buffer: DefaultBuffer::new(),
-      buf_cap: None,
-    }
+    Self::construct(reader, DefaultBuffer::new(), None)
   }
 
   /// Creates a new peekable wrapper around the given reader with the specified
@@ -164,12 +163,13 @@ impl<R> Peekable<R> {
   ///
   /// let peekable = peekable::Peekable::with_capacity(Cursor::new([0; 1024]), 1024);
   /// ```
+  #[cfg_attr(not(tarpaulin), inline(always))]
   pub fn with_capacity(reader: R, capacity: usize) -> Self {
-    Self {
+    Self::construct(
       reader,
-      buffer: DefaultBuffer::with_capacity(capacity),
-      buf_cap: Some(capacity),
-    }
+      DefaultBuffer::with_capacity(capacity),
+      Some(capacity),
+    )
   }
 }
 
@@ -185,15 +185,12 @@ impl<R, B> Peekable<R, B> {
   ///
   /// let peekable: Peekable<_, Vec<u8>> = Peekable::with_buffer(Cursor::new([1, 2, 3, 4]));
   /// ```
+  #[cfg_attr(not(tarpaulin), inline(always))]
   pub fn with_buffer(reader: R) -> Self
   where
     B: Buffer,
   {
-    Self {
-      reader,
-      buffer: B::new(),
-      buf_cap: None,
-    }
+    Self::construct(reader, B::new(), None)
   }
 
   /// Creates a new peekable wrapper around the given reader with the specified
@@ -207,14 +204,23 @@ impl<R, B> Peekable<R, B> {
   ///
   /// let peekable: Peekable<_, Vec<u8>>  = Peekable::with_capacity_and_buffer(Cursor::new([0; 1024]), 1024);
   /// ```
+  #[cfg_attr(not(tarpaulin), inline(always))]
   pub fn with_capacity_and_buffer(reader: R, capacity: usize) -> Self
+  where
+    B: Buffer,
+  {
+    Self::construct(reader, B::with_capacity(capacity), Some(capacity))
+  }
+
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  fn construct(reader: R, buffer: B, capacity: Option<usize>) -> Self
   where
     B: Buffer,
   {
     Self {
       reader,
-      buffer: B::with_capacity(capacity),
-      buf_cap: Some(capacity),
+      buffer,
+      buf_cap: capacity,
     }
   }
 
@@ -241,7 +247,7 @@ impl<R, B> Peekable<R, B> {
   /// assert_eq!(bytes, 2);
   /// assert_eq!(output, [3, 4]);
   /// ```
-  #[inline]
+  #[cfg_attr(not(tarpaulin), inline(always))]
   pub fn consume(&mut self) -> B
   where
     B: Buffer,
@@ -275,7 +281,7 @@ impl<R, B> Peekable<R, B> {
   /// assert_eq!(bytes, 2);
   /// assert_eq!(output, [3, 4]);
   /// ```
-  #[inline]
+  #[cfg_attr(not(tarpaulin), inline(always))]
   pub fn consume_in_place(&mut self)
   where
     B: Buffer,
@@ -302,7 +308,7 @@ impl<R, B> Peekable<R, B> {
   /// let (peeked, reader) = peekable.get_mut();
   /// assert_eq!(peeked, [1, 2]);
   /// ```
-  #[inline]
+  #[cfg_attr(not(tarpaulin), inline(always))]
   pub fn get_mut(&mut self) -> (&[u8], &mut R)
   where
     B: AsRef<[u8]>,
@@ -329,7 +335,7 @@ impl<R, B> Peekable<R, B> {
   /// let (peeked, reader) = peekable.get_ref();
   /// assert_eq!(peeked, [1, 2]);
   /// ```
-  #[inline]
+  #[cfg_attr(not(tarpaulin), inline(always))]
   pub fn get_ref(&self) -> (&[u8], &R)
   where
     B: AsRef<[u8]>,
@@ -357,7 +363,7 @@ impl<R, B> Peekable<R, B> {
   ///
   /// assert_eq!(peeked.as_slice(), [1, 2].as_slice());
   /// ```
-  #[inline]
+  #[cfg_attr(not(tarpaulin), inline(always))]
   pub fn into_components(self) -> (B, R) {
     (self.buffer, self.reader)
   }
@@ -487,28 +493,45 @@ where
         }
         cmp::Ordering::Greater => {
           self.buffer.resize(want_peek)?;
-          match self
-            .reader
-            .read(&mut self.buffer.as_mut_slice()[buffer_len..])
-          {
+          // Retry on `Interrupted` per the documented contract.
+          let result = loop {
+            match self
+              .reader
+              .read(&mut self.buffer.as_mut_slice()[buffer_len..])
+            {
+              Ok(n) => break Ok(n),
+              Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+              Err(e) => break Err(e),
+            }
+          };
+          match result {
             Ok(n) => {
               self.buffer.truncate(n + buffer_len);
               buf[..buffer_len + n].copy_from_slice(self.buffer.as_slice());
               Ok(buffer_len + n)
             }
-            Err(e) => Err(e),
+            Err(e) => {
+              // Roll back the resize so the peek buffer doesn't carry
+              // ghost zero-bytes that a subsequent call would return as
+              // "real" peeked data.
+              self.buffer.truncate(buffer_len);
+              Err(e)
+            }
           }
         }
       };
     }
 
     let this = self;
-    match this.reader.read(buf) {
-      Ok(bytes) => {
-        this.buffer.extend_from_slice(&buf[..bytes])?;
-        Ok(bytes)
+    loop {
+      match this.reader.read(buf) {
+        Ok(bytes) => {
+          this.buffer.extend_from_slice(&buf[..bytes])?;
+          return Ok(bytes);
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+        Err(e) => return Err(e),
       }
-      Err(e) => Err(e),
     }
   }
 
@@ -647,12 +670,7 @@ where
   pub fn peek_to_string(&mut self, buf: &mut String) -> Result<usize> {
     let s = match core::str::from_utf8(self.buffer.as_slice()) {
       Ok(s) => s,
-      Err(_) => {
-        return Err(std::io::Error::new(
-          std::io::ErrorKind::InvalidData,
-          "stream did not contain valid UTF-8",
-        ))
-      }
+      Err(e) => return Err(invalid_utf8_io_error(e)),
     };
 
     buf.push_str(s);
@@ -772,7 +790,13 @@ where
     }
     let mut readed = peek_buf_len;
     while !buf.is_empty() {
-      let n = this.reader.read(buf)?;
+      let n = loop {
+        match this.reader.read(buf) {
+          Ok(n) => break n,
+          Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+          Err(e) => return Err(e),
+        }
+      };
       {
         let (read, rest) = mem::take(&mut buf).split_at_mut(n);
         this.buffer.extend_from_slice(read)?;
@@ -812,9 +836,25 @@ where
     let cap = self.buffer.capacity();
     let cur = self.buffer.len();
     self.buffer.resize(cap)?;
-    let peeked = self.reader.read(&mut self.buffer.as_mut_slice()[cur..])?;
-    self.buffer.truncate(cur + peeked);
-    Ok(peeked)
+    // Retry on `Interrupted` and roll back the resize on error so the
+    // peek buffer doesn't end up holding ghost zero-bytes.
+    let result = loop {
+      match self.reader.read(&mut self.buffer.as_mut_slice()[cur..]) {
+        Ok(n) => break Ok(n),
+        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+        Err(e) => break Err(e),
+      }
+    };
+    match result {
+      Ok(peeked) => {
+        self.buffer.truncate(cur + peeked);
+        Ok(peeked)
+      }
+      Err(e) => {
+        self.buffer.truncate(cur);
+        Err(e)
+      }
+    }
   }
 }
 
@@ -860,6 +900,11 @@ pub trait PeekExt: Read {
 }
 
 impl<R: Read + ?Sized> PeekExt for R {}
+
+#[cfg_attr(not(tarpaulin), inline(always))]
+fn invalid_utf8_io_error(e: core::str::Utf8Error) -> std::io::Error {
+  std::io::Error::new(std::io::ErrorKind::InvalidData, e)
+}
 
 #[cfg(test)]
 mod tests {

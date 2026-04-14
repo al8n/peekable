@@ -86,6 +86,7 @@ pub trait AsyncPeek: AsyncRead {
 
 macro_rules! deref_async_peek {
   () => {
+    #[cfg_attr(not(tarpaulin), inline(always))]
     fn poll_peek(
       mut self: Pin<&mut Self>,
       cx: &mut Context<'_>,
@@ -94,6 +95,7 @@ macro_rules! deref_async_peek {
       Pin::new(&mut **self).poll_peek(cx, buf)
     }
 
+    #[cfg_attr(not(tarpaulin), inline(always))]
     fn poll_peek_vectored(
       mut self: Pin<&mut Self>,
       cx: &mut Context<'_>,
@@ -117,10 +119,12 @@ where
   P: DerefMut + Unpin,
   P::Target: AsyncPeek,
 {
+  #[cfg_attr(not(tarpaulin), inline(always))]
   fn poll_peek(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut [u8]) -> Poll<Result<usize>> {
     self.get_mut().as_mut().poll_peek(cx, buf)
   }
 
+  #[cfg_attr(not(tarpaulin), inline(always))]
   fn poll_peek_vectored(
     self: Pin<&mut Self>,
     cx: &mut Context<'_>,
@@ -142,12 +146,14 @@ pin_project_lite::pin_project! {
 }
 
 impl<R> From<R> for AsyncPeekable<R> {
+  #[cfg_attr(not(tarpaulin), inline(always))]
   fn from(reader: R) -> Self {
     Self::new(reader)
   }
 }
 
 impl<R> From<(usize, R)> for AsyncPeekable<R> {
+  #[cfg_attr(not(tarpaulin), inline(always))]
   fn from((cap, reader): (usize, R)) -> Self {
     Self::with_capacity(reader, cap)
   }
@@ -207,14 +213,17 @@ impl<W, B> AsyncWrite for AsyncPeekable<W, B>
 where
   W: AsyncWrite,
 {
+  #[cfg_attr(not(tarpaulin), inline(always))]
   fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<()>> {
     self.project().reader.poll_close(cx)
   }
 
+  #[cfg_attr(not(tarpaulin), inline(always))]
   fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<()>> {
     self.project().reader.poll_flush(cx)
   }
 
+  #[cfg_attr(not(tarpaulin), inline(always))]
   fn poll_write(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<Result<usize>> {
     self.project().reader.poll_write(cx, buf)
   }
@@ -253,8 +262,14 @@ where
               buf[..buffer_len + n].copy_from_slice(this.buffer.as_slice());
               Poll::Ready(Ok(buffer_len + n))
             }
-            Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
+            Poll::Ready(Err(e)) => {
+              // Roll back the resize so the peek buffer doesn't carry
+              // ghost zero-bytes past the originally peeked data.
+              this.buffer.truncate(buffer_len);
+              Poll::Ready(Err(e))
+            }
             Poll::Pending => {
+              this.buffer.truncate(buffer_len);
               buf[..buffer_len].copy_from_slice(this.buffer.as_slice());
               Poll::Ready(Ok(buffer_len))
             }
@@ -289,14 +304,10 @@ impl<R> AsyncPeekable<R> {
   /// let reader = futures::io::Cursor::new(&b"hello"[..]);
   /// let peekable = AsyncPeekable::new(reader);
   /// # });
-  ///
-  #[inline]
+  /// ```
+  #[cfg_attr(not(tarpaulin), inline(always))]
   pub fn new(reader: R) -> Self {
-    Self {
-      reader,
-      buffer: DefaultBuffer::new(),
-      buf_cap: None,
-    }
+    Self::construct(reader, DefaultBuffer::new(), None)
   }
 
   /// Creates a new peekable wrapper around the given reader with the specified
@@ -311,13 +322,14 @@ impl<R> AsyncPeekable<R> {
   /// let reader = futures::io::Cursor::new([0; 1024]);
   /// let peekable = AsyncPeekable::with_capacity(reader, 1024);
   /// # });
-  #[inline]
+  /// ```
+  #[cfg_attr(not(tarpaulin), inline(always))]
   pub fn with_capacity(reader: R, capacity: usize) -> Self {
-    Self {
+    Self::construct(
       reader,
-      buffer: DefaultBuffer::with_capacity(capacity),
-      buf_cap: Some(capacity),
-    }
+      DefaultBuffer::with_capacity(capacity),
+      Some(capacity),
+    )
   }
 }
 
@@ -336,17 +348,13 @@ impl<R, B> AsyncPeekable<R, B> {
   /// let reader = futures::io::Cursor::new(&b"hello"[..]);
   /// let peekable: AsyncPeekable<_, Vec<u8>> = AsyncPeekable::with_buffer(reader);
   /// # });
-  ///
-  #[inline]
+  /// ```
+  #[cfg_attr(not(tarpaulin), inline(always))]
   pub fn with_buffer(reader: R) -> Self
   where
     B: Buffer,
   {
-    Self {
-      reader,
-      buffer: B::new(),
-      buf_cap: None,
-    }
+    Self::construct(reader, B::new(), None)
   }
 
   /// Creates a new peekable wrapper around the given reader with the specified
@@ -362,15 +370,21 @@ impl<R, B> AsyncPeekable<R, B> {
   /// let reader = futures::io::Cursor::new([0; 1024]);
   /// let peekable: AsyncPeekable<_, Vec<u8>> = AsyncPeekable::with_capacity_and_buffer(reader, 1024);
   /// # });
-  #[inline]
+  /// ```
+  #[cfg_attr(not(tarpaulin), inline(always))]
   pub fn with_capacity_and_buffer(reader: R, capacity: usize) -> Self
   where
     B: Buffer,
   {
+    Self::construct(reader, B::with_capacity(capacity), Some(capacity))
+  }
+
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  fn construct(reader: R, buffer: B, buf_cap: Option<usize>) -> Self {
     Self {
       reader,
-      buffer: B::with_capacity(capacity),
-      buf_cap: Some(capacity),
+      buffer,
+      buf_cap,
     }
   }
 
@@ -399,7 +413,7 @@ impl<R, B> AsyncPeekable<R, B> {
   /// assert_eq!(output, [3, 4]);
   /// # });
   /// ```
-  #[inline]
+  #[cfg_attr(not(tarpaulin), inline(always))]
   pub fn consume(&mut self) -> B
   where
     B: Buffer,
@@ -435,7 +449,7 @@ impl<R, B> AsyncPeekable<R, B> {
   /// assert_eq!(output, [3, 4]);
   /// # });
   /// ```
-  #[inline]
+  #[cfg_attr(not(tarpaulin), inline(always))]
   pub fn consume_in_place(&mut self)
   where
     B: Buffer,
@@ -464,8 +478,8 @@ impl<R, B> AsyncPeekable<R, B> {
   /// let (buffer, reader) = peekable.get_mut();
   /// assert_eq!(buffer, [1, 2].as_slice());
   /// # });
-  /// ````
-  #[inline]
+  /// ```
+  #[cfg_attr(not(tarpaulin), inline(always))]
   pub fn get_mut(&mut self) -> (&[u8], &mut R)
   where
     B: Buffer,
@@ -494,7 +508,8 @@ impl<R, B> AsyncPeekable<R, B> {
   /// let (buffer, reader) = peekable.get_ref();
   /// assert_eq!(buffer, [1, 2].as_slice());
   /// # });
-  #[inline]
+  /// ```
+  #[cfg_attr(not(tarpaulin), inline(always))]
   pub fn get_ref(&self) -> (&[u8], &R)
   where
     B: Buffer,
@@ -521,7 +536,8 @@ impl<R, B> AsyncPeekable<R, B> {
   /// let (buffer, reader) = peekable.into_components();
   /// assert_eq!(buffer.as_slice(), [1, 2].as_slice());
   /// # });
-  #[inline]
+  /// ```
+  #[cfg_attr(not(tarpaulin), inline(always))]
   pub fn into_components(self) -> (B, R) {
     (self.buffer, self.reader)
   }
@@ -763,7 +779,7 @@ where
   /// let readed = peekable.read(&mut output).await.unwrap();
   /// assert_eq!(readed, 4);
   /// # });
-  /// ````
+  /// ```
   pub fn fill_peek_buf(&mut self) -> FillPeekBuf<'_, R, B> {
     assert_future::<Result<usize>, _>(FillPeekBuf::new(self))
   }

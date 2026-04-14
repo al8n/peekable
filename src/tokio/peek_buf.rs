@@ -2,11 +2,13 @@ use super::{AsyncPeek, AsyncPeekable, AsyncRead, Buffer, DefaultBuffer};
 
 use bytes::BufMut;
 use pin_project_lite::pin_project;
-use std::future::Future;
-use std::io;
-use std::marker::PhantomPinned;
-use std::pin::Pin;
-use std::task::{Context, Poll};
+use std::{
+  future::Future,
+  io,
+  marker::PhantomPinned,
+  pin::Pin,
+  task::{Context, Poll},
+};
 
 pub(crate) fn peek_buf<'a, R, B, BUF>(
   peeker: &'a mut AsyncPeekable<R, BUF>,

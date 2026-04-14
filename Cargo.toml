@@ -1,15 +1,15 @@
 [package]
 name = "peekable"
-version = "0.4.1"
+version = "0.5.0"
 edition = "2021"
 repository = "https://github.com/al8n/peekable"
 homepage = "https://github.com/al8n/peekable"
 documentation = "https://docs.rs/peekable"
-description = "Peekable reader and async reader, which enhance your network programming experience."
+description = "Buffered peek for `Read` and async readers (tokio, futures): inspect incoming bytes without consuming them. Useful for protocol detection, length-prefixed framing, and header inspection."
 license = "MIT OR Apache-2.0"
-rust-version = "1.56"
-keywords = ["peek", "io", "async", "tokio", "futures"]
-categories = ["asynchronous", "network-programming", "development-tools"]
+rust-version = "1.71"
+keywords = ["peek", "buffered", "async", "tokio", "futures"]
+categories = ["asynchronous", "network-programming", "data-structures"]
 
 [features]
 default = ["smallvec"]
@@ -27,11 +27,34 @@ bytes = { version = "1", optional = true }
 
 tinyvec = { version = "1", optional = true, features = ["alloc"] }
 
-
 [dev-dependencies]
 futures = { version = "0.3", features = ["executor"] }
 tokio = { version = "1", features = ["full"] }
+smol = "2"
 
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
+
+[[example]]
+name = "sync"
+path = "examples/sync.rs"
+
+[[example]]
+name = "tokio"
+path = "examples/tokio.rs"
+required-features = ["tokio"]
+
+[[example]]
+name = "smol"
+path = "examples/smol.rs"
+required-features = ["future"]
+
+
+[lints.rust]
+rust_2018_idioms = "warn"
+single_use_lifetimes = "warn"
+unexpected_cfgs = { level = "warn", check-cfg = [
+  'cfg(all_tests)',
+  'cfg(tarpaulin)',
+] }

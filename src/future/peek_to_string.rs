@@ -35,12 +35,7 @@ where
     let Self { peekable, buf } = &mut *self;
     let s = match core::str::from_utf8(peekable.buffer.as_slice()) {
       Ok(s) => s,
-      Err(_) => {
-        return Poll::Ready(Err(io::Error::new(
-          io::ErrorKind::InvalidData,
-          "stream did not contain valid UTF-8",
-        )))
-      }
+      Err(e) => return Poll::Ready(Err(super::invalid_utf8_io_error(e))),
     };
 
     let original_buf_len = buf.len();

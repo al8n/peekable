@@ -17,7 +17,8 @@ on:
       - 'LICENSE-*'
       - '**.md'
       - '**.txt'
-  schedule: [cron: "0 1 */7 * *"]
+  schedule: 
+    - cron: "0 1 1 * *"
 
 env:
   CARGO_TERM_COLOR: always
@@ -27,26 +28,37 @@ env:
   stable: stable
 
 jobs:
-  # Check formatting
+  # Check formatting (platform-independent, one OS is enough).
   rustfmt:
     name: rustfmt
-    strategy:
-      matrix:
-        os:
-          - ubuntu-latest
-          - macos-latest
-          - windows-latest
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v6
     - name: Install Rust
-      # --no-self-update is necessary because the windows environment cannot self-update rustup.exe.
-      run: rustup update stable --no-self-update && rustup default stable
+      run: rustup update stable && rustup default stable && rustup component add rustfmt
     - name: Check formatting
       run: cargo fmt --all -- --check
 
+  # Verify the declared MSRV in Cargo.toml still builds.
+  msrv:
+    name: msrv
+    runs-on: ubuntu-latest
+    env:
+      # MSRV-era compilers may emit warnings stable doesn't; don't deny them.
+      RUSTFLAGS: ""
+    steps:
+    - uses: actions/checkout@v6
+    - name: Read MSRV from Cargo.toml
+      id: msrv
+      run: |
+        ver=$(grep -m1 '^rust-version' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')
+        echo "version=$ver" >> "$GITHUB_OUTPUT"
+    - name: Install MSRV toolchain (${{ steps.msrv.outputs.version }})
+      run: rustup toolchain install ${{ steps.msrv.outputs.version }} --profile minimal
+    - name: cargo +MSRV check --all-features
+      run: cargo +${{ steps.msrv.outputs.version }} check --all-features
 
-  # Apply clippy lints
+  # Apply clippy lints across the feature powerset.
   clippy:
     name: clippy
     strategy:
@@ -57,14 +69,16 @@ jobs:
           - windows-latest
     runs-on: ${{ matrix.os }}
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v6
     - name: Install Rust
       # --no-self-update is necessary because the windows environment cannot self-update rustup.exe.
-      run: rustup update stable --no-self-update && rustup default stable
+      run: rustup update stable --no-self-update && rustup default stable && rustup component add clippy
     - name: Install cargo-hack
-      run: cargo install cargo-hack
+      uses: taiki-e/install-action@v2
+      with:
+        tool: cargo-hack
     - name: Apply clippy lints
-      run: cargo hack clippy --each-feature 
+      run: cargo hack clippy --each-feature --all-targets
 
   build:
     name: build
@@ -76,9 +90,9 @@ jobs:
           - windows-latest
     runs-on: ${{ matrix.os }}
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v6
     - name: Cache cargo build and registry
-      uses: actions/cache@v3
+      uses: actions/cache@v5
       with:
         path: |
           ~/.cargo/registry
@@ -91,15 +105,12 @@ jobs:
       # --no-self-update is necessary because the windows environment cannot self-update rustup.exe.
       run: rustup update stable --no-self-update && rustup default stable
     - name: Install cargo-hack
-      run: cargo install cargo-hack
-    - name: Cache ~/.cargo
-      uses: actions/cache@v3
+      uses: taiki-e/install-action@v2
       with:
-        path: ~/.cargo
-        key: ${{ runner.os }}-coverage-dotcargo
+        tool: cargo-hack
     - name: Run build
       run: cargo hack build --feature-powerset
-  
+
   test:
     name: test
     strategy:
@@ -110,9 +121,9 @@ jobs:
           - windows-latest
     runs-on: ${{ matrix.os }}
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v6
     - name: Cache cargo build and registry
-      uses: actions/cache@v3
+      uses: actions/cache@v5
       with:
         path: |
           ~/.cargo/registry
@@ -125,12 +136,9 @@ jobs:
       # --no-self-update is necessary because the windows environment cannot self-update rustup.exe.
       run: rustup update stable --no-self-update && rustup default stable
     - name: Install cargo-hack
-      run: cargo install cargo-hack
-    - name: Cache ~/.cargo
-      uses: actions/cache@v3
+      uses: taiki-e/install-action@v2
       with:
-        path: ~/.cargo
-        key: ${{ runner.os }}-coverage-dotcargo
+        tool: cargo-hack
     - name: Run test
       run: cargo hack test --feature-powerset
 
@@ -139,38 +147,61 @@ jobs:
     runs-on: ubuntu-latest
     needs:
       - rustfmt
+      - msrv
       - clippy
       - build
       - test
     steps:
-      - uses: actions/checkout@v3
-      - name: Install latest nightly
-        uses: actions-rs/toolchain@v1
+      - uses: actions/checkout@v6
+      - name: Install Rust
+        run: rustup update nightly && rustup default nightly
+      - name: Install cargo-tarpaulin
+        # Pin the tarpaulin version so CI and local runs track the same
+        # set of lines. Different tarpaulin versions can produce different
+        # totals (especially around macro-expanded code), which caused
+        # codecov numbers to drift from local runs.
+        uses: taiki-e/install-action@v2
         with:
-          toolchain: nightly
-          override: true
-      - uses: actions-rs/install@v0.1
+          tool: cargo-tarpaulin@0.35.2
+      - name: Cache cargo registry
+        # Intentionally do NOT cache `target/`. Tarpaulin's instrumented
+        # artifacts can get reused across runs even when src/ or tests/
+        # change, which leaves stale `.gcno`-style hit data in the cache
+        # and causes CI to under-report coverage vs local runs.
+        uses: actions/cache@v5
         with:
-          crate: cargo-tarpaulin
-          version: latest
-      - name: Cache ~/.cargo
-        uses: actions/cache@v3
-        with:
-          path: ~/.cargo
-          key: ${{ runner.os }}-coverage-dotcargo
-      - name: Cache cargo build
-        uses: actions/cache@v3
-        with:
-          path: target
-          key: ${{ runner.os }}-coverage-cargo-build-target
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-coverage-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-coverage-registry-
+      - name: Print rustc / tarpaulin versions
+        run: |
+          rustc --version
+          cargo tarpaulin --version
+      - name: Force clean build
+        # Belt-and-suspenders: even without a `target/` cache, make sure
+        # tarpaulin always re-instruments this crate from source.
+        run: cargo clean -p peekable
       - name: Run tarpaulin
-        uses: actions-rs/cargo@v1
+        env:
+          RUSTFLAGS: "--cfg tarpaulin"
+        run: cargo tarpaulin --all-features --run-types lib --run-types tests --run-types doctests --workspace --out xml
+      - name: Upload coverage report artifact
+        # Lets us download the exact cobertura.xml the CI produced and
+        # diff it locally against a local tarpaulin run — useful when
+        # codecov's reported number and local runs disagree.
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          command: tarpaulin
-          args: --all-features --run-types tests --run-types doctests --workspace --out xml
+          name: cobertura-xml
+          path: cobertura.xml
+          if-no-files-found: warn
+          retention-days: 14
       - name: Upload to codecov.io
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v6
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
-          fail_ci_if_error: true
           slug: ${{ github.repository }}
+          fail_ci_if_error: true
