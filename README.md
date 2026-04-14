@@ -132,11 +132,14 @@ Pick a backend with `peekable_with_buffer::<B>()` /
 
 ## MSRV
 
-Minimum supported Rust version is `1.71.0`. This is dictated by the
-current `tokio` minimum (which the optional `tokio` feature pulls in);
-without that feature the floor would be `1.60` (for the `dep:` feature
-prefix used in `Cargo.toml`). MSRV bumps will be considered a breaking
-change and require a minor version bump pre-1.0 (major post-1.0).
+The declared crate-wide minimum supported Rust version is `1.71.0`.
+This is dictated by the current `tokio` minimum, which the optional
+`tokio` feature pulls in. While the crate would otherwise compile on
+`1.60` (due to the `dep:` feature prefix used in `Cargo.toml`), Cargo
+cannot currently express feature-specific MSRVs, so users must use
+Rust `1.71.0` or newer regardless of whether `tokio` is enabled. MSRV
+bumps will be considered a breaking change and require a minor version
+bump pre-1.0 (major post-1.0).
 
 #### License
 

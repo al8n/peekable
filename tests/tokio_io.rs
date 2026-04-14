@@ -148,16 +148,24 @@ async fn bug2_poll_read_on_pending_does_not_duplicate() {
   p.peek(&mut b).await.unwrap();
   assert_eq!(&b, b"hell");
 
-  // Now read 8 — needs to read more from inner.
-  let mut out = vec![0u8; 8];
-  let n = p.read(&mut out).await.unwrap();
-  // We should NOT get duplicated "hell" bytes. The first read attempt
-  // returns Pending (giving us partial "hell"), the executor polls
-  // again, and we get more. Either way, "hell" must appear exactly once
-  // in the output, never twice.
-  let s = std::str::from_utf8(&out[..n]).unwrap();
-  let count = s.matches("hell").count();
-  assert_eq!(count, 1, "duplicated bytes in read: {:?}", s);
+  // Read across the Pending path, then read again to ensure bytes that
+  // were already returned are not left buffered for re-emission.
+  let mut out1 = vec![0u8; 8];
+  let n1 = p.read(&mut out1).await.unwrap();
+
+  let mut out2 = vec![0u8; 8];
+  let n2 = p.read(&mut out2).await.unwrap();
+
+  let mut all = Vec::with_capacity(n1 + n2);
+  all.extend_from_slice(&out1[..n1]);
+  all.extend_from_slice(&out2[..n2]);
+
+  assert_eq!(
+    &all,
+    b"hello world",
+    "duplicated or missing bytes across reads: {:?}",
+    std::str::from_utf8(&all).unwrap()
+  );
 }
 
 // ------------------------------------------------------------------

@@ -242,10 +242,16 @@ fn peek_equal_to_buffer_size() {
 #[test]
 fn fill_peek_buf_when_already_full_returns_zero() {
   let mut p = Cursor::new(b"abcde".to_vec()).peekable_with_capacity(3);
-  p.peek(&mut [0u8; 3]).unwrap(); // fill buffer to capacity
-                                  // Note: peek may exceed capacity, so this might still read.
-                                  // The point is to exercise fill_peek_buf when buffer is non-empty.
-  let _ = p.fill_peek_buf();
+  let n = p.peek(&mut [0u8; 3]).unwrap();
+  assert_eq!(n, 3); // fill buffer to its configured capacity
+
+  let n = p.fill_peek_buf().unwrap();
+  assert_eq!(n, 0);
+
+  let mut buf = [0u8; 3];
+  let n = p.peek(&mut buf).unwrap();
+  assert_eq!(n, 3);
+  assert_eq!(&buf, b"abc");
 }
 
 #[test]
