@@ -33,22 +33,45 @@ In network programming, applications frequently need to inspect incoming data be
 
   ```toml
   [dependencies]
-  peekable = "0.4"
+  peekable = "0.5"
   ```
 
 - **Tokio I/O**
 
   ```toml
   [dependencies]
-  peekable = { version = "0.4", features = ["tokio"] }
+  peekable = { version = "0.5", features = ["tokio"] }
   ```
 
 - **Futures I/O**
 
   ```toml
   [dependencies]
-  peekable = { version = "0.4", features = ["future"] }
+  peekable = { version = "0.5", features = ["future"] }
   ```
+
+### Feature flags
+
+| Feature | Default | Purpose |
+|---|---|---|
+| `smallvec` | yes | Use `SmallVec<[u8; 64]>` as the default peek buffer (avoids a heap allocation for typical peek sizes). |
+| `future` | no | `future::AsyncPeekable` for `futures_util::io::AsyncRead`. |
+| `tokio` | no | `tokio::AsyncPeekable` for `tokio::io::AsyncRead` (also enables `peek_buf` for `bytes::BufMut`). |
+| `tinyvec` | no | Adds a `Buffer` impl for `tinyvec::TinyVec` so it can be used as a custom backend. |
+
+### Buffer backends
+
+`Peekable<R, B>` and `AsyncPeekable<R, B>` are generic over the
+backing storage `B`. Any type that implements the `peekable::buffer::Buffer`
+trait works. Bundled implementations:
+
+- `Vec<u8>` — heap-only.
+- `smallvec::SmallVec<[u8; N]>` — inline first `N` bytes, then heap (default with `smallvec` feature).
+- `tinyvec::TinyVec<[u8; N]>` — inline first `N` bytes, then heap (with `tinyvec` feature).
+
+Pick a backend with `peekable_with_buffer::<B>()` /
+`peekable_with_capacity_and_buffer::<B>(cap)`. You can also implement
+`Buffer` for your own type if you need a custom backing store.
 
 ## Examples
 
@@ -107,6 +130,17 @@ In network programming, applications frequently need to inspect incoming data be
   assert_eq!(peeked, readed);
   ```
 
+## MSRV
+
+The declared crate-wide minimum supported Rust version is `1.71.0`.
+This is dictated by the current `tokio` minimum, which the optional
+`tokio` feature pulls in. While the crate would otherwise compile on
+`1.60` (due to the `dep:` feature prefix used in `Cargo.toml`), Cargo
+cannot currently express feature-specific MSRVs, so users must use
+Rust `1.71.0` or newer regardless of whether `tokio` is enabled. MSRV
+bumps will be considered a breaking change and require a minor version
+bump pre-1.0 (major post-1.0).
+
 #### License
 
 `peekable` is under the terms of both the MIT license and the
@@ -114,7 +148,7 @@ Apache License (Version 2.0).
 
 See [LICENSE-APACHE](LICENSE-APACHE), [LICENSE-MIT](LICENSE-MIT) for details.
 
-Copyright (c) 2024 Al Liu.
+Copyright (c) 2026 Al Liu.
 
 [Github-url]: https://github.com/al8n/peekable/
 [CI-url]: https://github.com/al8n/peekable/actions/workflows/ci.yml

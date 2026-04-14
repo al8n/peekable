@@ -49,13 +49,23 @@ where
 
     me.peeker.buffer.resize(*me.cap)?;
 
-    let n = {
-      ready!(Pin::new(&mut me.peeker.reader)
-        .poll_read(cx, &mut me.peeker.buffer.as_mut_slice()[*me.original..])?)
-    };
-
-    me.peeker.buffer.truncate(*me.original + n);
-
-    Poll::Ready(Ok(n))
+    match Pin::new(&mut me.peeker.reader)
+      .poll_read(cx, &mut me.peeker.buffer.as_mut_slice()[*me.original..])
+    {
+      Poll::Ready(Ok(n)) => {
+        me.peeker.buffer.truncate(*me.original + n);
+        Poll::Ready(Ok(n))
+      }
+      Poll::Ready(Err(e)) => {
+        // Roll back the resize so the peek buffer doesn't carry ghost
+        // zero-bytes that a subsequent operation would treat as data.
+        me.peeker.buffer.truncate(*me.original);
+        Poll::Ready(Err(e))
+      }
+      Poll::Pending => {
+        me.peeker.buffer.truncate(*me.original);
+        Poll::Pending
+      }
+    }
   }
 }

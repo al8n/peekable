@@ -487,28 +487,45 @@ where
         }
         cmp::Ordering::Greater => {
           self.buffer.resize(want_peek)?;
-          match self
-            .reader
-            .read(&mut self.buffer.as_mut_slice()[buffer_len..])
-          {
+          // Retry on `Interrupted` per the documented contract.
+          let result = loop {
+            match self
+              .reader
+              .read(&mut self.buffer.as_mut_slice()[buffer_len..])
+            {
+              Ok(n) => break Ok(n),
+              Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+              Err(e) => break Err(e),
+            }
+          };
+          match result {
             Ok(n) => {
               self.buffer.truncate(n + buffer_len);
               buf[..buffer_len + n].copy_from_slice(self.buffer.as_slice());
               Ok(buffer_len + n)
             }
-            Err(e) => Err(e),
+            Err(e) => {
+              // Roll back the resize so the peek buffer doesn't carry
+              // ghost zero-bytes that a subsequent call would return as
+              // "real" peeked data.
+              self.buffer.truncate(buffer_len);
+              Err(e)
+            }
           }
         }
       };
     }
 
     let this = self;
-    match this.reader.read(buf) {
-      Ok(bytes) => {
-        this.buffer.extend_from_slice(&buf[..bytes])?;
-        Ok(bytes)
+    loop {
+      match this.reader.read(buf) {
+        Ok(bytes) => {
+          this.buffer.extend_from_slice(&buf[..bytes])?;
+          return Ok(bytes);
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+        Err(e) => return Err(e),
       }
-      Err(e) => Err(e),
     }
   }
 
@@ -772,7 +789,13 @@ where
     }
     let mut readed = peek_buf_len;
     while !buf.is_empty() {
-      let n = this.reader.read(buf)?;
+      let n = loop {
+        match this.reader.read(buf) {
+          Ok(n) => break n,
+          Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+          Err(e) => return Err(e),
+        }
+      };
       {
         let (read, rest) = mem::take(&mut buf).split_at_mut(n);
         this.buffer.extend_from_slice(read)?;
@@ -812,9 +835,25 @@ where
     let cap = self.buffer.capacity();
     let cur = self.buffer.len();
     self.buffer.resize(cap)?;
-    let peeked = self.reader.read(&mut self.buffer.as_mut_slice()[cur..])?;
-    self.buffer.truncate(cur + peeked);
-    Ok(peeked)
+    // Retry on `Interrupted` and roll back the resize on error so the
+    // peek buffer doesn't end up holding ghost zero-bytes.
+    let result = loop {
+      match self.reader.read(&mut self.buffer.as_mut_slice()[cur..]) {
+        Ok(n) => break Ok(n),
+        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+        Err(e) => break Err(e),
+      }
+    };
+    match result {
+      Ok(peeked) => {
+        self.buffer.truncate(cur + peeked);
+        Ok(peeked)
+      }
+      Err(e) => {
+        self.buffer.truncate(cur);
+        Err(e)
+      }
+    }
   }
 }
 

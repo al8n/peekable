@@ -1,6 +1,5 @@
 use std::{
   cmp, io,
-  mem::MaybeUninit,
   ops::DerefMut,
   pin::Pin,
   task::{Context, Poll},
@@ -149,7 +148,10 @@ impl<R: AsyncRead, B: Buffer> AsyncRead for AsyncPeekable<R, B> {
 
       return match available.cmp(&buffer_len) {
         cmp::Ordering::Greater => {
-          // Continue peeking into the buffer if there's still space
+          // Track the original filled length so we can roll back on
+          // error or pending — `put_slice` advances filled and otherwise
+          // would leave the caller's buffer corrupted.
+          let orig_filled = buf.filled().len();
           buf.put_slice(this.buffer.as_slice());
 
           match this.reader.poll_read(cx, buf) {
@@ -158,14 +160,19 @@ impl<R: AsyncRead, B: Buffer> AsyncRead for AsyncPeekable<R, B> {
               Poll::Ready(Ok(()))
             }
             Poll::Ready(Err(e)) => {
-              let len = buf.filled().len();
-              // Safety: len - buffer_len..len guarantees we uninit the exact number of bytes from peek buffer
-              unsafe {
-                buf.inner_mut()[len - buffer_len..len].fill(MaybeUninit::uninit());
-              }
+              // Roll back the put_slice so the caller's buf is unchanged.
+              // The peek buffer is preserved for a retry.
+              buf.set_filled(orig_filled);
               Poll::Ready(Err(e))
             }
-            Poll::Pending => Poll::Pending,
+            Poll::Pending => {
+              // The inner reader has no more data right now, but we did
+              // serve `buffer_len` bytes from the peek buffer. Return a
+              // partial-Ready (a valid `AsyncRead` outcome) and clear
+              // the peek buffer so the bytes aren't returned again.
+              this.buffer.clear();
+              Poll::Ready(Ok(()))
+            }
           }
         }
         cmp::Ordering::Equal => {
@@ -216,7 +223,9 @@ impl<R: AsyncRead, B: Buffer> AsyncPeek for AsyncPeekable<R, B> {
     if buffer_len > 0 {
       let available = buf.remaining();
       if available > buffer_len {
-        // Not enough data in the buffer, need to peek more
+        // Not enough data in the buffer; try to peek more from the inner
+        // reader. Track `orig_filled` so we can roll back on error.
+        let orig_filled = buf.filled().len();
         buf.put_slice(this.buffer.as_slice());
         let cur = buf.filled().len();
         match this.reader.poll_read(cx, buf) {
@@ -226,10 +235,17 @@ impl<R: AsyncRead, B: Buffer> AsyncPeek for AsyncPeekable<R, B> {
             this.buffer.extend_from_slice(&filled[cur..cur + read])?;
             Poll::Ready(Ok(()))
           }
-          Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
+          Poll::Ready(Err(e)) => {
+            // Roll back the put_slice so the caller's buf is unchanged.
+            buf.set_filled(orig_filled);
+            Poll::Ready(Err(e))
+          }
           Poll::Pending => {
-            // Put what we have in the buffer into `buf` and return
-            buf.put_slice(&this.buffer.as_slice()[..buffer_len]);
+            // The inner reader has no more data right now, but we have
+            // already placed `buffer_len` bytes from the peek buffer
+            // into `buf`. Return a partial peek as `Ready(Ok(()))` —
+            // the data is still in `this.buffer` so subsequent peeks
+            // see it again. (Do NOT put_slice a second time.)
             Poll::Ready(Ok(()))
           }
         }

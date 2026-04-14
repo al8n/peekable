@@ -253,8 +253,14 @@ where
               buf[..buffer_len + n].copy_from_slice(this.buffer.as_slice());
               Poll::Ready(Ok(buffer_len + n))
             }
-            Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
+            Poll::Ready(Err(e)) => {
+              // Roll back the resize so the peek buffer doesn't carry
+              // ghost zero-bytes past the originally peeked data.
+              this.buffer.truncate(buffer_len);
+              Poll::Ready(Err(e))
+            }
             Poll::Pending => {
+              this.buffer.truncate(buffer_len);
               buf[..buffer_len].copy_from_slice(this.buffer.as_slice());
               Poll::Ready(Ok(buffer_len))
             }
