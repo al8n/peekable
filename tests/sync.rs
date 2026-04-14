@@ -241,7 +241,10 @@ fn peek_equal_to_buffer_size() {
 
 #[test]
 fn fill_peek_buf_when_already_full_returns_zero() {
-  let mut p = Cursor::new(b"abcde".to_vec()).peekable_with_capacity(3);
+  // Use Vec backend so capacity() returns exactly the requested cap.
+  // SmallVec's 64-byte inline capacity would mask this.
+  let mut p: peekable::Peekable<_, Vec<u8>> =
+    peekable::Peekable::with_capacity_and_buffer(Cursor::new(b"abcde".to_vec()), 3);
   let n = p.peek(&mut [0u8; 3]).unwrap();
   assert_eq!(n, 3); // fill buffer to its configured capacity
 
@@ -479,6 +482,7 @@ fn buffer_trait_methods_vec() {
   exercise_buffer_trait::<Vec<u8>>();
 }
 
+#[cfg(feature = "smallvec")]
 #[test]
 fn buffer_trait_methods_smallvec() {
   exercise_buffer_trait::<smallvec::SmallVec<[u8; 8]>>();
