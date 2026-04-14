@@ -1,15 +1,15 @@
 [package]
 name = "peekable"
-version = "0.4.1"
+version = "0.5.0"
 edition = "2021"
 repository = "https://github.com/al8n/peekable"
 homepage = "https://github.com/al8n/peekable"
 documentation = "https://docs.rs/peekable"
-description = "Peekable reader and async reader, which enhance your network programming experience."
+description = "Buffered peek for `Read` and async readers (tokio, futures): inspect incoming bytes without consuming them. Useful for protocol detection, length-prefixed framing, and header inspection."
 license = "MIT OR Apache-2.0"
-rust-version = "1.56"
-keywords = ["peek", "io", "async", "tokio", "futures"]
-categories = ["asynchronous", "network-programming", "development-tools"]
+rust-version = "1.71"
+keywords = ["peek", "buffered", "async", "tokio", "futures"]
+categories = ["asynchronous", "network-programming", "data-structures"]
 
 [features]
 default = ["smallvec"]
