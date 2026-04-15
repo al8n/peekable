@@ -4,6 +4,7 @@ codecov:
 ignore:
   - tests/* # Ignore all files in the tests directory
   - examples/* # Ignore all files in the examples directory
+  - src/buffer.rs # Ignore buffer.rs, which is mostly trivial forwarding code
 
 coverage:
   status:
