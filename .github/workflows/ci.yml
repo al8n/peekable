@@ -193,7 +193,7 @@ jobs:
         # diff it locally against a local tarpaulin run — useful when
         # codecov's reported number and local runs disagree.
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: cobertura-xml
           path: cobertura.xml
