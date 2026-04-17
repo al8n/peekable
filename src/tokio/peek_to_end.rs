@@ -80,7 +80,10 @@ where
             return Poll::Ready(Ok(inbuf + (me.buf.len() - reader_start)));
           }
           me.buf.extend_from_slice(filled);
-          me.peekable.buffer.extend_from_slice(filled)?;
+          if let Err(e) = me.peekable.buffer.extend_from_slice(filled) {
+            me.buf.truncate(*me.original_buf_len);
+            return Poll::Ready(Err(e));
+          }
         }
         Poll::Ready(Err(e)) if e.kind() == io::ErrorKind::Interrupted => continue,
         Poll::Ready(Err(e)) => {

@@ -78,10 +78,11 @@ where
         Poll::Ready(Ok(n)) => {
           let chunk = &this.staging[..n];
           this.buf.extend_from_slice(chunk);
-          // Mirror each chunk into the peek buffer immediately so
-          // that cancelling/dropping the future while Pending doesn't
-          // lose bytes the inner reader already consumed.
-          this.peekable.buffer.extend_from_slice(chunk)?;
+          if let Err(e) = this.peekable.buffer.extend_from_slice(chunk) {
+            // Keep buf clean even when the internal buffer mirror fails.
+            this.buf.truncate(this.original_buf_len);
+            return Poll::Ready(Err(e));
+          }
         }
         Poll::Ready(Err(e)) if e.kind() == io::ErrorKind::Interrupted => continue,
         Poll::Ready(Err(e)) => {

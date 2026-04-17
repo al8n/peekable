@@ -28,9 +28,8 @@ const STAGING_CAP: usize = 1024;
 /// for executors with small per-task stacks.
 ///
 /// When the `smallvec` feature is enabled, this is
-/// `SmallVec<[u8; 1024]>` — the bytes live inline in the future struct
-/// (which itself is heap-allocated once the future is spawned). In
-/// this crate it is used as a fixed-size 1024-byte staging buffer.
+/// `SmallVec<[u8; 1024]>` — the bytes live inline in the future struct.
+/// In this crate it is used as a fixed-size 1024-byte staging buffer.
 ///
 /// Without `smallvec`, a minimal inline wrapper provides the same
 /// fixed 1024-byte semantics with no heap allocation of its own.
@@ -695,9 +694,13 @@ where
         // on error. Consumed bytes are always accessible via
         // `get_ref()`.
         if buf.len() > original_buf_len + inbuf {
-          let _ = this
+          if let Err(buf_err) = this
             .buffer
-            .extend_from_slice(&buf[original_buf_len + inbuf..]);
+            .extend_from_slice(&buf[original_buf_len + inbuf..])
+          {
+            buf.truncate(original_buf_len);
+            return Err(buf_err);
+          }
         }
         buf.truncate(original_buf_len);
         Err(e)
