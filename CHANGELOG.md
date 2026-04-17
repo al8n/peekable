@@ -32,11 +32,11 @@
   `peek_to_string` now uses `read_to_end` into a raw `Vec<u8>` and
   mirrors unconditionally before validating UTF-8.
 
-- **`peek_to_string` error-path semantics**: on invalid UTF-8 the
-  caller's `buf` is now left unchanged (matching the documented
-  contract), while on I/O error with valid partial UTF-8 the caller's
-  `buf` receives the partial output (matching `peek_to_end`'s
-  documented error semantics).
+- **`peek_to_string` / `peek_to_end` error-path semantics**: on any
+  error (I/O or `InvalidData`) the caller's `buf` is now left
+  unchanged, matching `std::io::Read::read_to_string`'s contract.
+  Consumed bytes are preserved in the internal peek buffer and
+  accessible via `get_ref()`.
 
 #### Changed
 

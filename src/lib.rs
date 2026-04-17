@@ -641,8 +641,9 @@ where
   /// will continue.
   ///
   /// If any other peek error is encountered then this function immediately
-  /// returns. Any bytes which have alpeeky been peek will be appended to
-  /// `buf`.
+  /// returns and `buf` is unchanged. Any bytes the underlying reader
+  /// consumed before the error are preserved in the internal peek
+  /// buffer and can be accessed via [`get_ref`](Self::get_ref).
   ///
   /// # Examples
   ///
@@ -677,26 +678,28 @@ where
     let this = &mut *self;
     let inbuf = this.buffer.len();
 
-    let original_buf = buf.len();
+    let original_buf_len = buf.len();
     buf.extend_from_slice(this.buffer.as_slice());
 
-    let pre_read_len = buf.len();
     match this.reader.read_to_end(buf) {
       Ok(read) => {
         this
           .buffer
-          .extend_from_slice(&buf[original_buf + inbuf..])?;
+          .extend_from_slice(&buf[original_buf_len + inbuf..])?;
         Ok(read + inbuf)
       }
       Err(e) => {
-        // `read_to_end` may have appended bytes before the error.
-        // Mirror them into the peek buffer so the abstraction stays
-        // consistent — the underlying reader already consumed them.
-        if buf.len() > pre_read_len {
-          this
+        // Mirror any bytes the reader consumed into the peek buffer
+        // so the abstraction stays consistent, then truncate `buf`
+        // back to its original length — the caller's Vec stays clean
+        // on error. Consumed bytes are always accessible via
+        // `get_ref()`.
+        if buf.len() > original_buf_len + inbuf {
+          let _ = this
             .buffer
-            .extend_from_slice(&buf[original_buf + inbuf..])?;
+            .extend_from_slice(&buf[original_buf_len + inbuf..]);
         }
+        buf.truncate(original_buf_len);
         Err(e)
       }
     }
@@ -710,9 +713,9 @@ where
   /// # Errors
   ///
   /// If the data in this stream is *not* valid UTF-8 then an error is
-  /// returned and `buf` is unchanged.
-  ///
-  /// See [`peek_to_end`] for other error semantics.
+  /// returned and `buf` is unchanged. On any other I/O error, `buf` is
+  /// also unchanged. Consumed bytes are preserved in the internal peek
+  /// buffer and can be accessed via [`get_ref`](Self::get_ref).
   ///
   /// [`peek_to_end`]: Peek::peek_to_end
   ///

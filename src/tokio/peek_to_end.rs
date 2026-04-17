@@ -19,6 +19,8 @@ pin_project! {
   pub struct PeekToEnd<'a, R, B = DefaultBuffer> {
     peekable: &'a mut AsyncPeekable<R, B>,
     buf: &'a mut Vec<u8>,
+    original_buf_len: usize,
+    initial_peek_len: usize,
     reader_data_start: Option<usize>,
     staging: StagingBuf,
     #[pin]
@@ -32,10 +34,15 @@ pub(crate) fn peek_to_end<'a, R, B>(
 ) -> PeekToEnd<'a, R, B>
 where
   R: AsyncRead + Unpin,
+  B: Buffer,
 {
+  let original_buf_len = buffer.len();
+  let initial_peek_len = peekable.buffer.len();
   PeekToEnd {
     peekable,
     buf: buffer,
+    original_buf_len,
+    initial_peek_len,
     reader_data_start: None,
     staging: crate::new_staging_buf(),
     _pin: PhantomPinned,
@@ -51,7 +58,7 @@ where
 
   fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
     let me = self.project();
-    let inbuf = me.peekable.buffer.len();
+    let inbuf = *me.initial_peek_len;
 
     let reader_start = match *me.reader_data_start {
       Some(pos) => pos,
@@ -76,7 +83,10 @@ where
           me.peekable.buffer.extend_from_slice(filled)?;
         }
         Poll::Ready(Err(e)) if e.kind() == io::ErrorKind::Interrupted => continue,
-        Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+        Poll::Ready(Err(e)) => {
+          me.buf.truncate(*me.original_buf_len);
+          return Poll::Ready(Err(e));
+        }
         Poll::Pending => return Poll::Pending,
       }
     }
