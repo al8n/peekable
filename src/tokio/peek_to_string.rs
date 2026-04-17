@@ -1,5 +1,6 @@
 use super::{AsyncPeekable, Buffer, DefaultBuffer};
-use ::tokio::io::{AsyncRead, AsyncReadExt};
+use crate::StagingBuf;
+use ::tokio::io::AsyncRead;
 
 use pin_project_lite::pin_project;
 use std::{
@@ -16,10 +17,10 @@ pin_project! {
   #[must_use = "futures do nothing unless you `.await` or poll them"]
   pub struct PeekToString<'a, R, B = DefaultBuffer> {
     peekable: &'a mut AsyncPeekable<R, B>,
-    // This is the buffer we were provided. It will be replaced with an empty string
-    // while reading to postpone utf-8 handling until after reading.
     output: &'a mut String,
-    // Make this future `!Unpin` for compatibility with async trait methods.
+    raw: Vec<u8>,
+    prefix_copied: bool,
+    staging: StagingBuf,
     #[pin]
     _pin: PhantomPinned,
   }
@@ -35,6 +36,9 @@ where
   PeekToString {
     peekable,
     output: string,
+    raw: Vec::new(),
+    prefix_copied: false,
+    staging: crate::new_staging_buf(),
     _pin: PhantomPinned,
   }
 }
@@ -48,31 +52,40 @@ where
 
   fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
     let me = self.project();
+    let inbuf = me.peekable.buffer.len();
 
-    let s = match core::str::from_utf8(me.peekable.buffer.as_slice()) {
-      Ok(s) => s,
-      Err(e) => return Poll::Ready(Err(io::Error::new(io::ErrorKind::InvalidData, e))),
-    };
+    if !*me.prefix_copied {
+      if let Err(e) = core::str::from_utf8(me.peekable.buffer.as_slice()) {
+        return Poll::Ready(Err(io::Error::new(io::ErrorKind::InvalidData, e)));
+      }
+      me.raw.extend_from_slice(me.peekable.buffer.as_slice());
+      *me.prefix_copied = true;
+    }
 
-    let original_buf_len = me.output.len();
-    let peek_buf_len = me.peekable.buffer.len();
-    me.output.push_str(s);
-    let fut = me.peekable.reader.read_to_string(me.output);
-    ::tokio::pin!(fut);
-    match fut.poll(cx) {
-      Poll::Ready(Ok(read)) => {
-        me.peekable
-          .buffer
-          .extend_from_slice(&me.output.as_bytes()[original_buf_len + peek_buf_len..])?;
-        Poll::Ready(Ok(peek_buf_len + read))
+    loop {
+      let mut read_buf = tokio::io::ReadBuf::new(me.staging);
+      match Pin::new(&mut me.peekable.reader).poll_read(cx, &mut read_buf) {
+        Poll::Ready(Ok(())) => {
+          let n = read_buf.filled().len();
+          if n == 0 {
+            let s = match core::str::from_utf8(me.raw) {
+              Ok(s) => s,
+              Err(e) => return Poll::Ready(Err(io::Error::new(io::ErrorKind::InvalidData, e))),
+            };
+            me.output.push_str(s);
+            me.peekable.buffer.extend_from_slice(&me.raw[inbuf..])?;
+            return Poll::Ready(Ok(me.raw.len()));
+          }
+          me.raw.extend_from_slice(read_buf.filled());
+        }
+        Poll::Ready(Err(e)) => {
+          if me.raw.len() > inbuf {
+            let _ = me.peekable.buffer.extend_from_slice(&me.raw[inbuf..]);
+          }
+          return Poll::Ready(Err(e));
+        }
+        Poll::Pending => return Poll::Pending,
       }
-      Poll::Ready(Err(e)) => {
-        me.peekable
-          .buffer
-          .extend_from_slice(&me.output.as_bytes()[original_buf_len + peek_buf_len..])?;
-        Poll::Ready(Err(e))
-      }
-      Poll::Pending => Poll::Pending,
     }
   }
 }

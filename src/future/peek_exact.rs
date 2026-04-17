@@ -3,7 +3,7 @@ use futures_util::AsyncRead;
 use super::{AsyncPeekable, Buffer, DefaultBuffer};
 use std::{
   future::Future,
-  io, mem,
+  io,
   pin::Pin,
   task::{Context, Poll},
 };
@@ -14,13 +14,20 @@ use std::{
 pub struct PeekExact<'a, P, B = DefaultBuffer> {
   peekable: &'a mut AsyncPeekable<P, B>,
   buf: &'a mut [u8],
+  /// How many bytes of `buf` have been filled so far (from the peek
+  /// buffer prefix + inner reader). Survives across Pending polls.
+  filled: usize,
 }
 
 impl<P: Unpin, B> Unpin for PeekExact<'_, P, B> {}
 
 impl<'a, P: AsyncRead + Unpin, B> PeekExact<'a, P, B> {
   pub(super) fn new(peekable: &'a mut AsyncPeekable<P, B>, buf: &'a mut [u8]) -> Self {
-    Self { peekable, buf }
+    Self {
+      peekable,
+      buf,
+      filled: 0,
+    }
   }
 }
 
@@ -29,35 +36,36 @@ impl<P: AsyncRead + Unpin, B: Buffer> Future for PeekExact<'_, P, B> {
 
   fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
     let this = &mut *self;
+    let total = this.buf.len();
 
-    let buf_len = this.buf.len();
-    let peek_buf_len = this.peekable.buffer.len();
+    // On the first poll, copy what we can from the peek buffer.
+    if this.filled == 0 {
+      let peek_buf = this.peekable.buffer.as_slice();
+      let from_peek = peek_buf.len().min(total);
+      this.buf[..from_peek].copy_from_slice(&peek_buf[..from_peek]);
+      this.filled = from_peek;
 
-    if buf_len <= peek_buf_len {
-      this
-        .buf
-        .copy_from_slice(&this.peekable.buffer.as_slice()[..buf_len]);
-      return Poll::Ready(Ok(()));
-    }
-
-    this.buf[..peek_buf_len].copy_from_slice(this.peekable.buffer.as_slice());
-    {
-      let (_, rest) = mem::take(&mut this.buf).split_at_mut(peek_buf_len);
-      this.buf = rest;
-    }
-
-    let mut readed = peek_buf_len;
-    while !this.buf.is_empty() {
-      let n = ready!(Pin::new(&mut this.peekable.reader).poll_read(cx, this.buf))?;
-      {
-        let (read, rest) = mem::take(&mut this.buf).split_at_mut(n);
-        this.peekable.buffer.extend_from_slice(read)?;
-        readed += n;
-        this.buf = rest;
+      if this.filled == total {
+        return Poll::Ready(Ok(()));
       }
-      if n == 0 && readed != buf_len {
+    }
+
+    // Read from the inner reader into the unfilled portion of `buf`.
+    while this.filled < total {
+      let n =
+        ready!(Pin::new(&mut this.peekable.reader).poll_read(cx, &mut this.buf[this.filled..]))?;
+
+      if n == 0 {
         return Poll::Ready(Err(io::ErrorKind::UnexpectedEof.into()));
       }
+
+      // Mirror the newly-read bytes into the peek buffer so the
+      // peek abstraction is maintained.
+      this
+        .peekable
+        .buffer
+        .extend_from_slice(&this.buf[this.filled..this.filled + n])?;
+      this.filled += n;
     }
 
     Poll::Ready(Ok(()))

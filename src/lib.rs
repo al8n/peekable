@@ -18,6 +18,78 @@ pub type DefaultBuffer = smallvec::SmallVec<[u8; 64]>;
 #[cfg(not(feature = "smallvec"))]
 pub type DefaultBuffer = Vec<u8>;
 
+/// Staging-buffer capacity used by async `peek_to_end` / `peek_to_string`.
+#[cfg(any(feature = "tokio", feature = "future"))]
+const STAGING_CAP: usize = 1024;
+
+/// A fixed-capacity byte buffer for `poll_read` staging in the async
+/// peek futures. Stored as a field in the future struct rather than a
+/// stack-local array, so `poll()` adds zero stack pressure — important
+/// for executors with small per-task stacks.
+///
+/// When the `smallvec` feature is enabled, this is
+/// `SmallVec<[u8; 1024]>` — the bytes live inline in the future struct
+/// (which itself is heap-allocated once the future is spawned), and
+/// the SmallVec can spill to a separate heap block if a caller ever
+/// needs a staging buffer larger than 1024 bytes.
+///
+/// Without `smallvec`, a minimal inline wrapper provides the same
+/// inline-1024-byte semantics with no heap allocation of its own.
+#[cfg(all(feature = "smallvec", any(feature = "tokio", feature = "future")))]
+pub(crate) type StagingBuf = smallvec::SmallVec<[u8; STAGING_CAP]>;
+
+#[cfg(all(not(feature = "smallvec"), any(feature = "tokio", feature = "future")))]
+pub(crate) struct StagingBuf {
+  buf: [u8; STAGING_CAP],
+}
+
+#[cfg(all(not(feature = "smallvec"), any(feature = "tokio", feature = "future")))]
+impl StagingBuf {
+  /// Creates a new zeroed staging buffer.
+  pub(crate) fn new() -> Self {
+    Self {
+      buf: [0u8; STAGING_CAP],
+    }
+  }
+}
+
+#[cfg(all(not(feature = "smallvec"), any(feature = "tokio", feature = "future")))]
+impl core::ops::Deref for StagingBuf {
+  type Target = [u8];
+  fn deref(&self) -> &[u8] {
+    &self.buf
+  }
+}
+
+#[cfg(all(not(feature = "smallvec"), any(feature = "tokio", feature = "future")))]
+impl core::ops::DerefMut for StagingBuf {
+  fn deref_mut(&mut self) -> &mut [u8] {
+    &mut self.buf
+  }
+}
+
+#[cfg(all(not(feature = "smallvec"), any(feature = "tokio", feature = "future")))]
+impl core::fmt::Debug for StagingBuf {
+  fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    f.debug_struct("StagingBuf")
+      .field("cap", &STAGING_CAP)
+      .finish()
+  }
+}
+
+/// Construct a new [`StagingBuf`].
+#[cfg(any(feature = "tokio", feature = "future"))]
+pub(crate) fn new_staging_buf() -> StagingBuf {
+  #[cfg(feature = "smallvec")]
+  {
+    smallvec::smallvec![0u8; STAGING_CAP]
+  }
+  #[cfg(not(feature = "smallvec"))]
+  {
+    StagingBuf::new()
+  }
+}
+
 /// Extracts the successful type of a `Poll<T>`.
 ///
 /// This macro bakes in propagation of `Pending` signals by returning early.
@@ -609,15 +681,23 @@ where
     let original_buf = buf.len();
     buf.extend_from_slice(this.buffer.as_slice());
 
-    let fut = this.reader.read_to_end(buf);
-    match fut {
+    let pre_read_len = buf.len();
+    match this.reader.read_to_end(buf) {
       Ok(read) => {
         this
           .buffer
           .extend_from_slice(&buf[original_buf + inbuf..])?;
         Ok(read + inbuf)
       }
-      Err(e) => Err(e),
+      Err(e) => {
+        // `read_to_end` may have appended bytes before the error.
+        // Mirror them into the peek buffer so the abstraction stays
+        // consistent — the underlying reader already consumed them.
+        if buf.len() > pre_read_len {
+          let _ = this.buffer.extend_from_slice(&buf[original_buf + inbuf..]);
+        }
+        Err(e)
+      }
     }
   }
 
@@ -673,16 +753,34 @@ where
       Err(e) => return Err(invalid_utf8_io_error(e)),
     };
 
+    // Save the caller's pre-existing length BEFORE we push the peek
+    // buffer prefix. Without this, the `extend_from_slice` below
+    // uses a wrong offset and copies the caller's own pre-existing
+    // string content into the peek buffer on a non-empty `buf`.
+    let original_buf_len = buf.len();
     buf.push_str(s);
 
     let inbuf = self.buffer.len();
-    let fut = self.reader.read_to_string(buf);
-    match fut {
+    let pre_read_len = buf.len();
+    match self.reader.read_to_string(buf) {
       Ok(read) => {
-        self.buffer.extend_from_slice(&buf.as_bytes()[inbuf..])?;
+        self
+          .buffer
+          .extend_from_slice(&buf.as_bytes()[original_buf_len + inbuf..])?;
         Ok(read + inbuf)
       }
-      Err(e) => Err(e),
+      Err(e) => {
+        // `read_to_string` may have appended partial data before the
+        // error. Mirror those bytes into the peek buffer so the
+        // abstraction stays consistent — the underlying reader already
+        // advanced past them.
+        if buf.len() > pre_read_len {
+          let _ = self
+            .buffer
+            .extend_from_slice(&buf.as_bytes()[original_buf_len + inbuf..]);
+        }
+        Err(e)
+      }
     }
   }
 

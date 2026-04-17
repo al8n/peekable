@@ -1,6 +1,7 @@
-use futures_util::{AsyncRead, AsyncReadExt, FutureExt};
+use futures_util::AsyncRead;
 
 use super::{AsyncPeekable, Buffer, DefaultBuffer};
+use crate::StagingBuf;
 use std::{
   future::Future,
   io,
@@ -14,13 +15,28 @@ use std::{
 pub struct PeekToString<'a, P, B = DefaultBuffer> {
   peekable: &'a mut AsyncPeekable<P, B>,
   buf: &'a mut String,
+  /// Accumulator for raw bytes. UTF-8 validation is deferred to EOF
+  /// so that partial multi-byte sequences across Pending boundaries
+  /// don't cause spurious errors.
+  raw: Vec<u8>,
+  /// `true` once the peek-buffer prefix has been validated and
+  /// appended to `raw`.
+  prefix_copied: bool,
+  /// Staging buffer for `poll_read` — inline for small reads.
+  staging: StagingBuf,
 }
 
 impl<P: Unpin, B> Unpin for PeekToString<'_, P, B> {}
 
 impl<'a, P: AsyncRead + Unpin, B> PeekToString<'a, P, B> {
   pub(super) fn new(peekable: &'a mut AsyncPeekable<P, B>, buf: &'a mut String) -> Self {
-    Self { peekable, buf }
+    Self {
+      peekable,
+      buf,
+      raw: Vec::new(),
+      prefix_copied: false,
+      staging: crate::new_staging_buf(),
+    }
   }
 }
 
@@ -32,31 +48,39 @@ where
   type Output = io::Result<usize>;
 
   fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-    let Self { peekable, buf } = &mut *self;
-    let s = match core::str::from_utf8(peekable.buffer.as_slice()) {
-      Ok(s) => s,
-      Err(e) => return Poll::Ready(Err(super::invalid_utf8_io_error(e))),
-    };
+    let this = &mut *self;
+    let inbuf = this.peekable.buffer.len();
 
-    let original_buf_len = buf.len();
-    buf.push_str(s);
+    if !this.prefix_copied {
+      if let Err(e) = core::str::from_utf8(this.peekable.buffer.as_slice()) {
+        return Poll::Ready(Err(super::invalid_utf8_io_error(e)));
+      }
+      this.raw.extend_from_slice(this.peekable.buffer.as_slice());
+      this.prefix_copied = true;
+    }
 
-    let inbuf = peekable.buffer.len();
-    let mut fut = peekable.reader.read_to_string(buf);
-    match fut.poll_unpin(cx) {
-      Poll::Ready(Ok(read)) => {
-        peekable
-          .buffer
-          .extend_from_slice(&buf.as_bytes()[original_buf_len + inbuf..])?;
-        Poll::Ready(Ok(read + inbuf))
+    loop {
+      match Pin::new(&mut this.peekable.reader).poll_read(cx, &mut this.staging) {
+        Poll::Ready(Ok(0)) => {
+          let s = match core::str::from_utf8(&this.raw) {
+            Ok(s) => s,
+            Err(e) => return Poll::Ready(Err(super::invalid_utf8_io_error(e))),
+          };
+          this.buf.push_str(s);
+          this.peekable.buffer.extend_from_slice(&this.raw[inbuf..])?;
+          return Poll::Ready(Ok(this.raw.len()));
+        }
+        Poll::Ready(Ok(n)) => {
+          this.raw.extend_from_slice(&this.staging[..n]);
+        }
+        Poll::Ready(Err(e)) => {
+          if this.raw.len() > inbuf {
+            let _ = this.peekable.buffer.extend_from_slice(&this.raw[inbuf..]);
+          }
+          return Poll::Ready(Err(e));
+        }
+        Poll::Pending => return Poll::Pending,
       }
-      Poll::Ready(Err(e)) => {
-        peekable
-          .buffer
-          .extend_from_slice(&buf.as_bytes()[original_buf_len + inbuf..])?;
-        Poll::Ready(Err(e))
-      }
-      Poll::Pending => Poll::Pending,
     }
   }
 }
