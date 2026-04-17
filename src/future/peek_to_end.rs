@@ -72,10 +72,10 @@ where
         }
         Poll::Ready(Err(e)) => {
           if this.buf.len() > reader_start {
-            let _ = this
+            this
               .peekable
               .buffer
-              .extend_from_slice(&this.buf[reader_start..]);
+              .extend_from_slice(&this.buf[reader_start..])?;
           }
           return Poll::Ready(Err(e));
         }

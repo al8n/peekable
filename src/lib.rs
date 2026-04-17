@@ -694,7 +694,9 @@ where
         // Mirror them into the peek buffer so the abstraction stays
         // consistent — the underlying reader already consumed them.
         if buf.len() > pre_read_len {
-          let _ = this.buffer.extend_from_slice(&buf[original_buf + inbuf..]);
+          this
+            .buffer
+            .extend_from_slice(&buf[original_buf + inbuf..])?;
         }
         Err(e)
       }
@@ -748,10 +750,15 @@ where
   /// # }
   /// ```
   pub fn peek_to_string(&mut self, buf: &mut String) -> Result<usize> {
-    // Validate the existing peek buffer as UTF-8 up front — if it's
-    // already invalid, fail fast without touching the reader.
+    // Validate the existing peek buffer up front, but only fail fast
+    // for definitively invalid UTF-8. An error with `error_len() ==
+    // None` means the buffer ends with an incomplete code point (e.g.
+    // a prior `peek_exact` split a multi-byte sequence), which may
+    // become valid once more bytes are read from the reader.
     if let Err(e) = core::str::from_utf8(self.buffer.as_slice()) {
-      return Err(invalid_utf8_io_error(e));
+      if e.error_len().is_some() {
+        return Err(invalid_utf8_io_error(e));
+      }
     }
 
     let inbuf = self.buffer.len();
@@ -768,7 +775,7 @@ where
     // The reader has already consumed them; they must be replayable
     // via future peek/read calls even if the stream is invalid UTF-8.
     if !raw.is_empty() {
-      let _ = self.buffer.extend_from_slice(&raw);
+      self.buffer.extend_from_slice(&raw)?;
     }
 
     // Check if the full peek buffer (prefix + raw) is valid UTF-8.
@@ -781,11 +788,12 @@ where
     //
     // 2. Docs say "see peek_to_end for other error semantics" (line
     //    714), which appends partial output on I/O error.
-    //    → On I/O error WITH valid UTF-8 prefix, push to buf.
+    //    → On I/O error WITH valid UTF-8 so far, push to buf.
     //
-    // The two cases are mutually exclusive: if the data is invalid
-    // UTF-8 we return InvalidData (not the I/O error), so the I/O
-    // error path only fires when we have valid UTF-8.
+    // When both an I/O error and invalid UTF-8 are present, we
+    // propagate the I/O error (the reader failure is the primary
+    // cause) and leave buf unchanged (we can't push non-UTF-8 into
+    // a String).
 
     match (reader_result, utf8_valid) {
       // Happy path: read OK, valid UTF-8.
@@ -801,12 +809,14 @@ where
       )),
       // I/O error and the data so far is valid UTF-8 → partial output.
       (Err(e), true) => {
+        // SAFETY: just validated above.
         let s = unsafe { core::str::from_utf8_unchecked(self.buffer.as_slice()) };
         buf.push_str(s);
         Err(e)
       }
-      // I/O error AND invalid UTF-8 → buf unchanged, report I/O error
-      // (the InvalidData is secondary to the I/O failure).
+      // I/O error AND invalid UTF-8 → buf unchanged, propagate the
+      // I/O error (the reader failure is the primary cause; we can't
+      // push non-UTF-8 into a String anyway).
       (Err(e), false) => Err(e),
     }
   }

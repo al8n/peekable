@@ -672,3 +672,65 @@ fn poll_read_greater_branch_pending_partial_returns_buffered_data() {
   }
   assert_eq!(&out[..3], b"hel");
 }
+
+// ------------------------------------------------------------------
+// Regression: peek_to_end must not duplicate the prefix on re-poll
+// after Pending. Uses FlakyReader to force a Pending mid-stream.
+// ------------------------------------------------------------------
+
+#[test]
+fn peek_to_end_survives_pending_boundary() {
+  futures::executor::block_on(async {
+    let r = FlakyReader::new(
+      b"abcdef".to_vec(),
+      vec![
+        Action::ReadFromInner, // fills peek buffer with first chunk
+        Action::Pending,       // forces a re-poll
+        Action::ReadFromInner, // remainder
+      ],
+    );
+    let mut p = AsyncPeekable::new(r);
+
+    // Pre-fill a couple bytes so the peek buffer has a prefix.
+    let mut pre = [0u8; 2];
+    p.peek(&mut pre).await.unwrap();
+    assert_eq!(&pre, b"ab");
+
+    // peek_to_end must return all bytes exactly once.
+    let mut out = Vec::new();
+    let n = p.peek_to_end(&mut out).await.unwrap();
+    assert_eq!(n, 6);
+    assert_eq!(&out, b"abcdef");
+  });
+}
+
+// ------------------------------------------------------------------
+// Regression: peek_to_string with a peek buffer ending mid-codepoint
+// must not spuriously reject the stream as invalid UTF-8.
+// ------------------------------------------------------------------
+
+#[test]
+fn peek_to_string_with_mid_codepoint_peek_buffer() {
+  futures::executor::block_on(async {
+    // "é" is U+00E9, encoded as [0xC3, 0xA9] in UTF-8.
+    // We'll arrange the peek buffer to end after the first byte
+    // (0xC3) — an incomplete sequence — and let peek_to_string
+    // read the second byte (0xA9) from the inner reader.
+    let data = "héllo".as_bytes().to_vec();
+    let r = FlakyReader::new(data, vec![Action::ReadFromInner]);
+    let mut p = AsyncPeekable::new(r);
+
+    // Peek exactly 2 bytes: 'h' (0x68) + first byte of 'é' (0xC3).
+    // The peek buffer now ends with an incomplete UTF-8 sequence.
+    let mut pre = [0u8; 2];
+    p.peek_exact(&mut pre).await.unwrap();
+    assert_eq!(&pre, &[0x68, 0xC3]);
+
+    // peek_to_string must NOT reject this as InvalidData — it
+    // should read the remaining bytes and produce valid UTF-8.
+    let mut s = String::new();
+    let n = p.peek_to_string(&mut s).await.unwrap();
+    assert_eq!(s, "héllo");
+    assert_eq!(n, "héllo".len());
+  });
+}

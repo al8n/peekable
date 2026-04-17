@@ -56,7 +56,9 @@ where
 
     if !*me.prefix_copied {
       if let Err(e) = core::str::from_utf8(me.peekable.buffer.as_slice()) {
-        return Poll::Ready(Err(io::Error::new(io::ErrorKind::InvalidData, e)));
+        if e.error_len().is_some() {
+          return Poll::Ready(Err(io::Error::new(io::ErrorKind::InvalidData, e)));
+        }
       }
       me.raw.extend_from_slice(me.peekable.buffer.as_slice());
       *me.prefix_copied = true;
@@ -86,7 +88,7 @@ where
         }
         Poll::Ready(Err(e)) => {
           if me.raw.len() > inbuf {
-            let _ = me.peekable.buffer.extend_from_slice(&me.raw[inbuf..]);
+            me.peekable.buffer.extend_from_slice(&me.raw[inbuf..])?;
           }
           return Poll::Ready(Err(e));
         }

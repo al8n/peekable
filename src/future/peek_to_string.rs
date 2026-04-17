@@ -52,8 +52,14 @@ where
     let inbuf = this.peekable.buffer.len();
 
     if !this.prefix_copied {
+      // Only reject definitively invalid UTF-8 up front.
+      // `error_len() == None` means the buffer ends with an
+      // incomplete code point that may become valid once more bytes
+      // are read.
       if let Err(e) = core::str::from_utf8(this.peekable.buffer.as_slice()) {
-        return Poll::Ready(Err(super::invalid_utf8_io_error(e)));
+        if e.error_len().is_some() {
+          return Poll::Ready(Err(super::invalid_utf8_io_error(e)));
+        }
       }
       this.raw.extend_from_slice(this.peekable.buffer.as_slice());
       this.prefix_copied = true;
@@ -81,7 +87,7 @@ where
         }
         Poll::Ready(Err(e)) => {
           if this.raw.len() > inbuf {
-            let _ = this.peekable.buffer.extend_from_slice(&this.raw[inbuf..]);
+            this.peekable.buffer.extend_from_slice(&this.raw[inbuf..])?;
           }
           return Poll::Ready(Err(e));
         }

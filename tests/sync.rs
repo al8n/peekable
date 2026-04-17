@@ -591,3 +591,27 @@ fn peek_propagates_non_interrupted_error_no_buffer() {
   let err = p.peek(&mut out).unwrap_err();
   assert_eq!(err.kind(), ErrorKind::Other);
 }
+
+// ------------------------------------------------------------------
+// Regression: peek_to_string with a peek buffer ending mid-codepoint
+// ------------------------------------------------------------------
+
+#[test]
+fn peek_to_string_with_mid_codepoint_peek_buffer() {
+  use peekable::PeekExt;
+  use std::io::Cursor;
+
+  // "é" = [0xC3, 0xA9]. Peek 2 bytes: 'h' + first byte of 'é'.
+  let data = "héllo".as_bytes().to_vec();
+  let mut p = Cursor::new(data).peekable();
+
+  let mut pre = [0u8; 2];
+  p.peek_exact(&mut pre).unwrap();
+  assert_eq!(&pre, &[0x68, 0xC3]);
+
+  // peek_to_string must complete the sequence, not reject it.
+  let mut s = String::new();
+  let n = p.peek_to_string(&mut s).unwrap();
+  assert_eq!(s, "héllo");
+  assert_eq!(n, "héllo".len());
+}
