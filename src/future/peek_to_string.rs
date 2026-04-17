@@ -15,26 +15,25 @@ use std::{
 pub struct PeekToString<'a, P, B = DefaultBuffer> {
   peekable: &'a mut AsyncPeekable<P, B>,
   buf: &'a mut String,
-  /// Accumulator for raw bytes. UTF-8 validation is deferred to EOF
-  /// so that partial multi-byte sequences across Pending boundaries
-  /// don't cause spurious errors.
-  raw: Vec<u8>,
-  /// `true` once the peek-buffer prefix has been validated and
-  /// appended to `raw`.
-  prefix_copied: bool,
+  /// Number of bytes that were in the peek buffer when this future
+  /// was created. Everything from this offset onward was read by us.
+  inbuf: usize,
+  /// `true` once the peek-buffer prefix has been validated.
+  started: bool,
   /// Staging buffer for `poll_read` — inline for small reads.
   staging: StagingBuf,
 }
 
 impl<P: Unpin, B> Unpin for PeekToString<'_, P, B> {}
 
-impl<'a, P: AsyncRead + Unpin, B> PeekToString<'a, P, B> {
+impl<'a, P: AsyncRead + Unpin, B: Buffer> PeekToString<'a, P, B> {
   pub(super) fn new(peekable: &'a mut AsyncPeekable<P, B>, buf: &'a mut String) -> Self {
+    let inbuf = peekable.buffer.len();
     Self {
       peekable,
       buf,
-      raw: Vec::new(),
-      prefix_copied: false,
+      inbuf,
+      started: false,
       staging: crate::new_staging_buf(),
     }
   }
@@ -49,49 +48,40 @@ where
 
   fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
     let this = &mut *self;
-    let inbuf = this.peekable.buffer.len();
 
-    if !this.prefix_copied {
-      // Only reject definitively invalid UTF-8 up front.
-      // `error_len() == None` means the buffer ends with an
-      // incomplete code point that may become valid once more bytes
-      // are read.
+    // Validate the existing peek-buffer prefix exactly once. Only
+    // reject definitively invalid UTF-8 (`error_len().is_some()`);
+    // an incomplete trailing sequence is allowed — the remaining
+    // bytes may complete it.
+    if !this.started {
       if let Err(e) = core::str::from_utf8(this.peekable.buffer.as_slice()) {
         if e.error_len().is_some() {
           return Poll::Ready(Err(super::invalid_utf8_io_error(e)));
         }
       }
-      this.raw.extend_from_slice(this.peekable.buffer.as_slice());
-      this.prefix_copied = true;
+      this.started = true;
     }
 
+    // Read from the inner reader and accumulate directly into the
+    // peek buffer — no separate `raw: Vec<u8>` needed. This keeps
+    // peak memory at ~2× stream size (peek buffer + caller String)
+    // instead of ~3× (peek buffer + raw + caller String).
     loop {
       match Pin::new(&mut this.peekable.reader).poll_read(cx, &mut this.staging) {
         Poll::Ready(Ok(0)) => {
-          // Mirror reader bytes into the peek buffer BEFORE the
-          // UTF-8 check. The reader already consumed them; they
-          // must survive even if the stream is invalid UTF-8.
-          if this.raw.len() > inbuf {
-            this.peekable.buffer.extend_from_slice(&this.raw[inbuf..])?;
-          }
-
-          let s = match core::str::from_utf8(&this.raw) {
+          // EOF. Validate the full peek buffer as UTF-8.
+          let s = match core::str::from_utf8(this.peekable.buffer.as_slice()) {
             Ok(s) => s,
             Err(e) => return Poll::Ready(Err(super::invalid_utf8_io_error(e))),
           };
           this.buf.push_str(s);
-          return Poll::Ready(Ok(this.raw.len()));
+          return Poll::Ready(Ok(this.peekable.buffer.len()));
         }
         Poll::Ready(Ok(n)) => {
-          this.raw.extend_from_slice(&this.staging[..n]);
+          this.peekable.buffer.extend_from_slice(&this.staging[..n])?;
         }
         Poll::Ready(Err(e)) if e.kind() == io::ErrorKind::Interrupted => continue,
-        Poll::Ready(Err(e)) => {
-          if this.raw.len() > inbuf {
-            this.peekable.buffer.extend_from_slice(&this.raw[inbuf..])?;
-          }
-          return Poll::Ready(Err(e));
-        }
+        Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
         Poll::Pending => return Poll::Pending,
       }
     }

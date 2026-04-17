@@ -1,6 +1,6 @@
 # CHANGELOG
 
-## RELEASED
+## UNRELEASED
 
 ### 0.5.1
 
