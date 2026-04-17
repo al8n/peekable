@@ -18,7 +18,6 @@ pin_project! {
   pub struct PeekToString<'a, R, B = DefaultBuffer> {
     peekable: &'a mut AsyncPeekable<R, B>,
     output: &'a mut String,
-    inbuf: usize,
     started: bool,
     staging: StagingBuf,
     #[pin]
@@ -34,11 +33,9 @@ where
   R: AsyncRead + Unpin,
   B: Buffer,
 {
-  let inbuf = peekable.buffer.len();
   PeekToString {
     peekable,
     output: string,
-    inbuf,
     started: false,
     staging: crate::new_staging_buf(),
     _pin: PhantomPinned,

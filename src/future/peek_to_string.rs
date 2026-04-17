@@ -15,9 +15,6 @@ use std::{
 pub struct PeekToString<'a, P, B = DefaultBuffer> {
   peekable: &'a mut AsyncPeekable<P, B>,
   buf: &'a mut String,
-  /// Number of bytes that were in the peek buffer when this future
-  /// was created. Everything from this offset onward was read by us.
-  inbuf: usize,
   /// `true` once the peek-buffer prefix has been validated.
   started: bool,
   /// Staging buffer for `poll_read` — inline for small reads.
@@ -28,11 +25,9 @@ impl<P: Unpin, B> Unpin for PeekToString<'_, P, B> {}
 
 impl<'a, P: AsyncRead + Unpin, B: Buffer> PeekToString<'a, P, B> {
   pub(super) fn new(peekable: &'a mut AsyncPeekable<P, B>, buf: &'a mut String) -> Self {
-    let inbuf = peekable.buffer.len();
     Self {
       peekable,
       buf,
-      inbuf,
       started: false,
       staging: crate::new_staging_buf(),
     }
