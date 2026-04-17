@@ -86,6 +86,7 @@ where
           }
           me.raw.extend_from_slice(read_buf.filled());
         }
+        Poll::Ready(Err(e)) if e.kind() == io::ErrorKind::Interrupted => continue,
         Poll::Ready(Err(e)) => {
           if me.raw.len() > inbuf {
             me.peekable.buffer.extend_from_slice(&me.raw[inbuf..])?;

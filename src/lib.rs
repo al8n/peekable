@@ -29,12 +29,11 @@ const STAGING_CAP: usize = 1024;
 ///
 /// When the `smallvec` feature is enabled, this is
 /// `SmallVec<[u8; 1024]>` — the bytes live inline in the future struct
-/// (which itself is heap-allocated once the future is spawned), and
-/// the SmallVec can spill to a separate heap block if a caller ever
-/// needs a staging buffer larger than 1024 bytes.
+/// (which itself is heap-allocated once the future is spawned). In
+/// this crate it is used as a fixed-size 1024-byte staging buffer.
 ///
 /// Without `smallvec`, a minimal inline wrapper provides the same
-/// inline-1024-byte semantics with no heap allocation of its own.
+/// fixed 1024-byte semantics with no heap allocation of its own.
 #[cfg(all(feature = "smallvec", any(feature = "tokio", feature = "future")))]
 pub(crate) type StagingBuf = smallvec::SmallVec<[u8; STAGING_CAP]>;
 

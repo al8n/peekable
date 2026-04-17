@@ -76,6 +76,7 @@ where
           }
           me.buf.extend_from_slice(read_buf.filled());
         }
+        Poll::Ready(Err(e)) if e.kind() == io::ErrorKind::Interrupted => continue,
         Poll::Ready(Err(e)) => {
           if me.buf.len() > reader_start {
             me.peekable

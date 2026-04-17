@@ -85,6 +85,7 @@ where
         Poll::Ready(Ok(n)) => {
           this.raw.extend_from_slice(&this.staging[..n]);
         }
+        Poll::Ready(Err(e)) if e.kind() == io::ErrorKind::Interrupted => continue,
         Poll::Ready(Err(e)) => {
           if this.raw.len() > inbuf {
             this.peekable.buffer.extend_from_slice(&this.raw[inbuf..])?;

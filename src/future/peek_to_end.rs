@@ -70,6 +70,7 @@ where
         Poll::Ready(Ok(n)) => {
           this.buf.extend_from_slice(&this.staging[..n]);
         }
+        Poll::Ready(Err(e)) if e.kind() == io::ErrorKind::Interrupted => continue,
         Poll::Ready(Err(e)) => {
           if this.buf.len() > reader_start {
             this
