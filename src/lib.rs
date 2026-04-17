@@ -748,39 +748,66 @@ where
   /// # }
   /// ```
   pub fn peek_to_string(&mut self, buf: &mut String) -> Result<usize> {
-    let s = match core::str::from_utf8(self.buffer.as_slice()) {
-      Ok(s) => s,
-      Err(e) => return Err(invalid_utf8_io_error(e)),
-    };
-
-    // Save the caller's pre-existing length BEFORE we push the peek
-    // buffer prefix. Without this, the `extend_from_slice` below
-    // uses a wrong offset and copies the caller's own pre-existing
-    // string content into the peek buffer on a non-empty `buf`.
-    let original_buf_len = buf.len();
-    buf.push_str(s);
+    // Validate the existing peek buffer as UTF-8 up front — if it's
+    // already invalid, fail fast without touching the reader.
+    if let Err(e) = core::str::from_utf8(self.buffer.as_slice()) {
+      return Err(invalid_utf8_io_error(e));
+    }
 
     let inbuf = self.buffer.len();
-    let pre_read_len = buf.len();
-    match self.reader.read_to_string(buf) {
-      Ok(read) => {
-        self
-          .buffer
-          .extend_from_slice(&buf.as_bytes()[original_buf_len + inbuf..])?;
-        Ok(read + inbuf)
+
+    // Read the remaining stream into a raw byte Vec instead of calling
+    // `read_to_string` directly. `read_to_string` restores the caller
+    // String on UTF-8 failure, which hides how many bytes the reader
+    // consumed and makes it impossible to mirror them into the peek
+    // buffer. Reading raw bytes lets us preserve them unconditionally.
+    let mut raw = Vec::new();
+    let reader_result = self.reader.read_to_end(&mut raw);
+
+    // Mirror raw bytes into the peek buffer BEFORE validating UTF-8.
+    // The reader has already consumed them; they must be replayable
+    // via future peek/read calls even if the stream is invalid UTF-8.
+    if !raw.is_empty() {
+      let _ = self.buffer.extend_from_slice(&raw);
+    }
+
+    // Check if the full peek buffer (prefix + raw) is valid UTF-8.
+    let utf8_valid = core::str::from_utf8(self.buffer.as_slice()).is_ok();
+
+    // Two error contracts to honour:
+    //
+    // 1. Docs say "buf is unchanged" on InvalidData (line 711-712).
+    //    → Do NOT touch buf when the stream contains non-UTF-8.
+    //
+    // 2. Docs say "see peek_to_end for other error semantics" (line
+    //    714), which appends partial output on I/O error.
+    //    → On I/O error WITH valid UTF-8 prefix, push to buf.
+    //
+    // The two cases are mutually exclusive: if the data is invalid
+    // UTF-8 we return InvalidData (not the I/O error), so the I/O
+    // error path only fires when we have valid UTF-8.
+
+    match (reader_result, utf8_valid) {
+      // Happy path: read OK, valid UTF-8.
+      (Ok(_), true) => {
+        // SAFETY: just validated above.
+        let s = unsafe { core::str::from_utf8_unchecked(self.buffer.as_slice()) };
+        buf.push_str(s);
+        Ok(inbuf + raw.len())
       }
-      Err(e) => {
-        // `read_to_string` may have appended partial data before the
-        // error. Mirror those bytes into the peek buffer so the
-        // abstraction stays consistent — the underlying reader already
-        // advanced past them.
-        if buf.len() > pre_read_len {
-          let _ = self
-            .buffer
-            .extend_from_slice(&buf.as_bytes()[original_buf_len + inbuf..]);
-        }
+      // Read OK but stream is not valid UTF-8 → buf unchanged.
+      (Ok(_), false) => Err(invalid_utf8_io_error(
+        core::str::from_utf8(self.buffer.as_slice()).unwrap_err(),
+      )),
+      // I/O error and the data so far is valid UTF-8 → partial output.
+      (Err(e), true) => {
+        let s = unsafe { core::str::from_utf8_unchecked(self.buffer.as_slice()) };
+        buf.push_str(s);
         Err(e)
       }
+      // I/O error AND invalid UTF-8 → buf unchanged, report I/O error
+      // (the InvalidData is secondary to the I/O failure).
+      (Err(e), false) => Err(e),
     }
   }
 

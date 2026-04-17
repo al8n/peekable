@@ -68,12 +68,18 @@ where
         Poll::Ready(Ok(())) => {
           let n = read_buf.filled().len();
           if n == 0 {
+            // Mirror reader bytes into the peek buffer BEFORE the
+            // UTF-8 check — consumed bytes must survive even if the
+            // stream is invalid UTF-8.
+            if me.raw.len() > inbuf {
+              me.peekable.buffer.extend_from_slice(&me.raw[inbuf..])?;
+            }
+
             let s = match core::str::from_utf8(me.raw) {
               Ok(s) => s,
               Err(e) => return Poll::Ready(Err(io::Error::new(io::ErrorKind::InvalidData, e))),
             };
             me.output.push_str(s);
-            me.peekable.buffer.extend_from_slice(&me.raw[inbuf..])?;
             return Poll::Ready(Ok(me.raw.len()));
           }
           me.raw.extend_from_slice(read_buf.filled());

@@ -62,12 +62,18 @@ where
     loop {
       match Pin::new(&mut this.peekable.reader).poll_read(cx, &mut this.staging) {
         Poll::Ready(Ok(0)) => {
+          // Mirror reader bytes into the peek buffer BEFORE the
+          // UTF-8 check. The reader already consumed them; they
+          // must survive even if the stream is invalid UTF-8.
+          if this.raw.len() > inbuf {
+            this.peekable.buffer.extend_from_slice(&this.raw[inbuf..])?;
+          }
+
           let s = match core::str::from_utf8(&this.raw) {
             Ok(s) => s,
             Err(e) => return Poll::Ready(Err(super::invalid_utf8_io_error(e))),
           };
           this.buf.push_str(s);
-          this.peekable.buffer.extend_from_slice(&this.raw[inbuf..])?;
           return Poll::Ready(Ok(this.raw.len()));
         }
         Poll::Ready(Ok(n)) => {
