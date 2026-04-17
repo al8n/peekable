@@ -14,7 +14,7 @@
   `peek_exact` copied from offset 0 of the peek buffer on re-poll
   instead of the continuation offset (`abcd` → `abab`). All six futures
   are now proper state machines with progress fields (`reader_data_start`,
-  `prefix_copied`, `filled`) that survive `Pending`.
+  `started`, `filled`) that survive `Pending`.
 
 #### Fixed (correctness — sync)
 
@@ -48,6 +48,8 @@
   minimal fixed-array wrapper provides the same inline semantics. This
   eliminates stack pressure inside `poll()` for executors with small
   per-task stacks.
+
+## RELEASED
 
 ### 0.5.0
 

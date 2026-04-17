@@ -67,24 +67,16 @@ where
       let mut read_buf = tokio::io::ReadBuf::new(me.staging);
       match Pin::new(&mut me.peekable.reader).poll_read(cx, &mut read_buf) {
         Poll::Ready(Ok(())) => {
-          let n = read_buf.filled().len();
+          let filled = read_buf.filled();
+          let n = filled.len();
           if n == 0 {
-            me.peekable
-              .buffer
-              .extend_from_slice(&me.buf[reader_start..])?;
             return Poll::Ready(Ok(inbuf + (me.buf.len() - reader_start)));
           }
-          me.buf.extend_from_slice(read_buf.filled());
+          me.buf.extend_from_slice(filled);
+          me.peekable.buffer.extend_from_slice(filled)?;
         }
         Poll::Ready(Err(e)) if e.kind() == io::ErrorKind::Interrupted => continue,
-        Poll::Ready(Err(e)) => {
-          if me.buf.len() > reader_start {
-            me.peekable
-              .buffer
-              .extend_from_slice(&me.buf[reader_start..])?;
-          }
-          return Poll::Ready(Err(e));
-        }
+        Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
         Poll::Pending => return Poll::Pending,
       }
     }

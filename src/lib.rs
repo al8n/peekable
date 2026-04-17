@@ -777,46 +777,19 @@ where
       self.buffer.extend_from_slice(&raw)?;
     }
 
-    // Check if the full peek buffer (prefix + raw) is valid UTF-8.
-    let utf8_valid = core::str::from_utf8(self.buffer.as_slice()).is_ok();
+    // On error (either I/O or InvalidData), leave `buf` unchanged.
+    // This matches std's `Read::read_to_string` contract and the
+    // old `read_to_string`-based implementation. The consumed bytes
+    // are already in the peek buffer — the caller can inspect it
+    // via `get_ref()` if partial data is needed after an error.
+    reader_result?;
 
-    // Two error contracts to honour:
-    //
-    // 1. Docs say "buf is unchanged" on InvalidData (line 711-712).
-    //    → Do NOT touch buf when the stream contains non-UTF-8.
-    //
-    // 2. Docs say "see peek_to_end for other error semantics" (line
-    //    714), which appends partial output on I/O error.
-    //    → On I/O error WITH valid UTF-8 so far, push to buf.
-    //
-    // When both an I/O error and invalid UTF-8 are present, we
-    // propagate the I/O error (the reader failure is the primary
-    // cause) and leave buf unchanged (we can't push non-UTF-8 into
-    // a String).
-
-    match (reader_result, utf8_valid) {
-      // Happy path: read OK, valid UTF-8.
-      (Ok(_), true) => {
-        // SAFETY: just validated above.
-        let s = unsafe { core::str::from_utf8_unchecked(self.buffer.as_slice()) };
+    match core::str::from_utf8(self.buffer.as_slice()) {
+      Ok(s) => {
         buf.push_str(s);
         Ok(inbuf + raw.len())
       }
-      // Read OK but stream is not valid UTF-8 → buf unchanged.
-      (Ok(_), false) => Err(invalid_utf8_io_error(
-        core::str::from_utf8(self.buffer.as_slice()).unwrap_err(),
-      )),
-      // I/O error and the data so far is valid UTF-8 → partial output.
-      (Err(e), true) => {
-        // SAFETY: just validated above.
-        let s = unsafe { core::str::from_utf8_unchecked(self.buffer.as_slice()) };
-        buf.push_str(s);
-        Err(e)
-      }
-      // I/O error AND invalid UTF-8 → buf unchanged, propagate the
-      // I/O error (the reader failure is the primary cause; we can't
-      // push non-UTF-8 into a String anyway).
-      (Err(e), false) => Err(e),
+      Err(e) => Err(invalid_utf8_io_error(e)),
     }
   }
 

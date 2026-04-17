@@ -61,25 +61,19 @@ where
     loop {
       match Pin::new(&mut this.peekable.reader).poll_read(cx, &mut this.staging) {
         Poll::Ready(Ok(0)) => {
-          this
-            .peekable
-            .buffer
-            .extend_from_slice(&this.buf[reader_start..])?;
+          // EOF — all chunks already mirrored incrementally.
           return Poll::Ready(Ok(inbuf + (this.buf.len() - reader_start)));
         }
         Poll::Ready(Ok(n)) => {
-          this.buf.extend_from_slice(&this.staging[..n]);
+          let chunk = &this.staging[..n];
+          this.buf.extend_from_slice(chunk);
+          // Mirror each chunk into the peek buffer immediately so
+          // that cancelling/dropping the future while Pending doesn't
+          // lose bytes the inner reader already consumed.
+          this.peekable.buffer.extend_from_slice(chunk)?;
         }
         Poll::Ready(Err(e)) if e.kind() == io::ErrorKind::Interrupted => continue,
-        Poll::Ready(Err(e)) => {
-          if this.buf.len() > reader_start {
-            this
-              .peekable
-              .buffer
-              .extend_from_slice(&this.buf[reader_start..])?;
-          }
-          return Poll::Ready(Err(e));
-        }
+        Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
         Poll::Pending => return Poll::Pending,
       }
     }
