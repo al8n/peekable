@@ -14,11 +14,11 @@
   `peek_exact` copied from offset 0 of the peek buffer on re-poll
   instead of the continuation offset (`abcd` → `abab`). All six futures
   are now proper state machines with progress fields (`reader_data_start`,
-  `started`, `filled`) that survive `Pending`. Also, `peek_to_end` /
-  `peek_to_string` now keep the caller's output buffer unchanged on
-  error: `PeekToEnd` truncates any partial append before returning `Err`,
-  and `PeekToString` no longer leaves partial data behind on I/O error,
-  intentionally matching the sync semantics and `std::io::Read` contracts.
+  `started`, `filled`) that survive `Pending`. The error-path semantics
+  now match `std::io::Read` contracts: `peek_to_end` leaves any partial
+  data appended to the caller's `Vec` in place on error (matching
+  `read_to_end`), while `peek_to_string` leaves the caller's `String`
+  unchanged on error (matching `read_to_string`).
 
 #### Fixed (correctness — sync)
 

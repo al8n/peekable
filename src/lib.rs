@@ -693,9 +693,9 @@ where
         // std's `Read::read_to_end` contract where partial data
         // remains in the caller's Vec on error.
         if buf.len() > original_buf_len + inbuf {
-          let _ = this
+          this
             .buffer
-            .extend_from_slice(&buf[original_buf_len + inbuf..]);
+            .extend_from_slice(&buf[original_buf_len + inbuf..])?;
         }
         Err(e)
       }
