@@ -76,9 +76,14 @@ where
           if n == 0 {
             return Poll::Ready(Ok(inbuf + (me.buf.len() - reader_start)));
           }
-          // TODO(al8n): same fallible-Buffer concern as the futures
-          // variant — see future/peek_to_end.rs for details.
-          me.peekable.buffer.extend_from_slice(filled)?;
+          // TODO(al8n): if extend_from_slice fails, the peek buffer
+          // won't have these bytes — see future/peek_to_end.rs.
+          // At least give the caller the data in buf (matching
+          // read_to_end's partial-data-on-error contract).
+          if let Err(e) = me.peekable.buffer.extend_from_slice(filled) {
+            me.buf.extend_from_slice(filled);
+            return Poll::Ready(Err(e));
+          }
           me.buf.extend_from_slice(filled);
         }
         Poll::Ready(Err(e)) if e.kind() == io::ErrorKind::Interrupted => continue,

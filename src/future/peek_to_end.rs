@@ -72,16 +72,16 @@ where
         }
         Poll::Ready(Ok(n)) => {
           let chunk = &this.staging[..n];
-          // Mirror into the peek buffer first — if this fails, the
-          // caller's buf stays clean (no partial append without a
-          // matching peek-buffer entry).
-          //
-          // TODO(al8n): if `extend_from_slice` fails, the bytes in
-          // `staging` are lost — the reader consumed them but they
-          // can't be stored. A future improvement could read directly
-          // into the peek buffer's tail (resize + poll_read into
-          // buffer.as_mut_slice()[old_len..]) to eliminate this window.
-          this.peekable.buffer.extend_from_slice(chunk)?;
+          // TODO(al8n): if extend_from_slice fails, the peek buffer
+          // won't have these bytes. A future improvement could read
+          // directly into the peek buffer's tail (resize + poll_read
+          // into buffer.as_mut_slice()[old_len..]) to eliminate this.
+          // At least give the caller the data in buf (matching
+          // read_to_end's partial-data-on-error contract).
+          if let Err(e) = this.peekable.buffer.extend_from_slice(chunk) {
+            this.buf.extend_from_slice(chunk);
+            return Poll::Ready(Err(e));
+          }
           this.buf.extend_from_slice(chunk);
         }
         Poll::Ready(Err(e)) if e.kind() == io::ErrorKind::Interrupted => continue,
