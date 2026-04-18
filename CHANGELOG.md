@@ -2,7 +2,7 @@
 
 ## UNRELEASED
 
-### 0.5.1
+### 0.6.0
 
 #### Fixed (correctness — async futures + tokio)
 
