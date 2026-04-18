@@ -76,8 +76,8 @@ where
           if n == 0 {
             return Poll::Ready(Ok(inbuf + (me.buf.len() - reader_start)));
           }
-          me.buf.extend_from_slice(filled);
           me.peekable.buffer.extend_from_slice(filled)?;
+          me.buf.extend_from_slice(filled);
         }
         Poll::Ready(Err(e)) if e.kind() == io::ErrorKind::Interrupted => continue,
         // Leave partial data in buf — matches std/tokio's

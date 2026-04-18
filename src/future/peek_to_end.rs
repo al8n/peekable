@@ -72,11 +72,11 @@ where
         }
         Poll::Ready(Ok(n)) => {
           let chunk = &this.staging[..n];
-          this.buf.extend_from_slice(chunk);
-          // Mirror each chunk into the peek buffer immediately so
-          // cancelling/dropping the future while Pending doesn't
-          // lose bytes the inner reader already consumed.
+          // Mirror into the peek buffer first — if this fails, the
+          // caller's buf stays clean (no partial append without a
+          // matching peek-buffer entry).
           this.peekable.buffer.extend_from_slice(chunk)?;
+          this.buf.extend_from_slice(chunk);
         }
         Poll::Ready(Err(e)) if e.kind() == io::ErrorKind::Interrupted => continue,
         // Leave partial data in buf — matches std/tokio's
