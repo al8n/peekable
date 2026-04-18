@@ -640,9 +640,8 @@ where
   /// will continue.
   ///
   /// If any other peek error is encountered then this function immediately
-  /// returns and `buf` is unchanged. Any bytes the underlying reader
-  /// consumed before the error are preserved in the internal peek
-  /// buffer and can be accessed via [`get_ref`](Self::get_ref).
+  /// returns. Any bytes which have already been peeked will be appended
+  /// to `buf`, matching [`std::io::Read::read_to_end`]'s contract.
   ///
   /// # Examples
   ///
@@ -688,21 +687,16 @@ where
         Ok(read + inbuf)
       }
       Err(e) => {
-        // Mirror any bytes the reader consumed into the peek buffer
-        // so the abstraction stays consistent, then truncate `buf`
-        // back to its original length — the caller's Vec stays clean
-        // on error. Consumed bytes are always accessible via
-        // `get_ref()`.
+        // `read_to_end` may have appended partial data before the
+        // error. Mirror those bytes into the peek buffer so the
+        // abstraction stays consistent. Leave `buf` as-is — matching
+        // std's `Read::read_to_end` contract where partial data
+        // remains in the caller's Vec on error.
         if buf.len() > original_buf_len + inbuf {
-          if let Err(buf_err) = this
+          let _ = this
             .buffer
-            .extend_from_slice(&buf[original_buf_len + inbuf..])
-          {
-            buf.truncate(original_buf_len);
-            return Err(buf_err);
-          }
+            .extend_from_slice(&buf[original_buf_len + inbuf..]);
         }
-        buf.truncate(original_buf_len);
         Err(e)
       }
     }

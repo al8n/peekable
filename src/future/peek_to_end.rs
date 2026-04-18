@@ -15,9 +15,6 @@ use std::{
 pub struct PeekToEnd<'a, P, B = DefaultBuffer> {
   peekable: &'a mut AsyncPeekable<P, B>,
   buf: &'a mut Vec<u8>,
-  /// `buf.len()` before this future touched it. On error, `buf` is
-  /// truncated back to this length so the caller's Vec stays clean.
-  original_buf_len: usize,
   /// Peek-buffer length at creation time. Stored once so the return
   /// value isn't inflated by chunks mirrored into the peek buffer
   /// during earlier polls.
@@ -35,12 +32,10 @@ impl<P: Unpin, B> Unpin for PeekToEnd<'_, P, B> {}
 
 impl<'a, P: AsyncRead + Unpin, B: Buffer> PeekToEnd<'a, P, B> {
   pub(super) fn new(peekable: &'a mut AsyncPeekable<P, B>, buf: &'a mut Vec<u8>) -> Self {
-    let original_buf_len = buf.len();
     let initial_peek_len = peekable.buffer.len();
     Self {
       peekable,
       buf,
-      original_buf_len,
       initial_peek_len,
       reader_data_start: None,
       staging: crate::new_staging_buf(),
@@ -78,20 +73,15 @@ where
         Poll::Ready(Ok(n)) => {
           let chunk = &this.staging[..n];
           this.buf.extend_from_slice(chunk);
-          if let Err(e) = this.peekable.buffer.extend_from_slice(chunk) {
-            // Keep buf clean even when the internal buffer mirror fails.
-            this.buf.truncate(this.original_buf_len);
-            return Poll::Ready(Err(e));
-          }
+          // Mirror each chunk into the peek buffer immediately so
+          // cancelling/dropping the future while Pending doesn't
+          // lose bytes the inner reader already consumed.
+          this.peekable.buffer.extend_from_slice(chunk)?;
         }
         Poll::Ready(Err(e)) if e.kind() == io::ErrorKind::Interrupted => continue,
-        Poll::Ready(Err(e)) => {
-          // Truncate buf back to its original length so the caller's
-          // Vec stays clean on error. Consumed bytes are already in
-          // the peek buffer (mirrored per-chunk above).
-          this.buf.truncate(this.original_buf_len);
-          return Poll::Ready(Err(e));
-        }
+        // Leave partial data in buf — matches std/tokio's
+        // read_to_end contract.
+        Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
         Poll::Pending => return Poll::Pending,
       }
     }

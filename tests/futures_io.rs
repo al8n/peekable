@@ -734,3 +734,45 @@ fn peek_to_string_with_mid_codepoint_peek_buffer() {
     assert_eq!(n, "héllo".len());
   });
 }
+
+#[test]
+fn peek_to_end_keeps_partial_data_on_error() {
+  struct ReadThenError {
+    data: &'static [u8],
+    emitted: bool,
+  }
+
+  impl AsyncRead for ReadThenError {
+    fn poll_read(
+      mut self: Pin<&mut Self>,
+      _cx: &mut Context<'_>,
+      buf: &mut [u8],
+    ) -> Poll<io::Result<usize>> {
+      if !self.emitted {
+        self.emitted = true;
+        let n = self.data.len().min(buf.len());
+        buf[..n].copy_from_slice(&self.data[..n]);
+        Poll::Ready(Ok(n))
+      } else {
+        Poll::Ready(Err(io::Error::new(ErrorKind::Other, "boom")))
+      }
+    }
+  }
+
+  futures::executor::block_on(async {
+    let r = ReadThenError {
+      data: b"abc",
+      emitted: false,
+    };
+    let mut p = AsyncPeekable::new(r);
+
+    let mut out = b"sentinel".to_vec();
+
+    let err = p.peek_to_end(&mut out).await.unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::Other);
+    // Partial data stays in buf — matching std's read_to_end contract.
+    // "abc" was read before the error, so buf has "sentinel" + "abc".
+    assert!(out.starts_with(b"sentinel"));
+    assert!(out.len() > 8);
+  });
+}

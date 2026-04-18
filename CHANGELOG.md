@@ -14,7 +14,11 @@
   `peek_exact` copied from offset 0 of the peek buffer on re-poll
   instead of the continuation offset (`abcd` → `abab`). All six futures
   are now proper state machines with progress fields (`reader_data_start`,
-  `started`, `filled`) that survive `Pending`.
+  `started`, `filled`) that survive `Pending`. Also, `peek_to_end` /
+  `peek_to_string` now keep the caller's output buffer unchanged on
+  error: `PeekToEnd` truncates any partial append before returning `Err`,
+  and `PeekToString` no longer leaves partial data behind on I/O error,
+  intentionally matching the sync semantics and `std::io::Read` contracts.
 
 #### Fixed (correctness — sync)
 
@@ -32,11 +36,14 @@
   `peek_to_string` now uses `read_to_end` into a raw `Vec<u8>` and
   mirrors unconditionally before validating UTF-8.
 
-- **`peek_to_string` / `peek_to_end` error-path semantics**: on any
-  error (I/O or `InvalidData`) the caller's `buf` is now left
-  unchanged, matching `std::io::Read::read_to_string`'s contract.
-  Consumed bytes are preserved in the internal peek buffer and
-  accessible via `get_ref()`.
+- **`peek_to_string` error-path semantics**: on any error (I/O or
+  `InvalidData`) the caller's `buf` is left unchanged, matching
+  `std::io::Read::read_to_string`'s contract. Consumed bytes are
+  preserved in the internal peek buffer and accessible via `get_ref()`.
+
+- **`peek_to_end` error-path semantics**: on error, partial data
+  stays in `buf`, matching `std::io::Read::read_to_end`'s contract.
+  Consumed bytes are also mirrored into the internal peek buffer.
 
 #### Changed
 

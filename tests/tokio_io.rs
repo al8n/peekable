@@ -616,3 +616,43 @@ async fn peek_to_string_with_mid_codepoint_peek_buffer() {
   assert_eq!(s, "héllo");
   assert_eq!(n, "héllo".len());
 }
+
+#[tokio::test]
+async fn peek_to_end_keeps_partial_data_on_error() {
+  struct ErrorAfterFirstRead {
+    state: u8,
+  }
+
+  impl AsyncRead for ErrorAfterFirstRead {
+    fn poll_read(
+      mut self: Pin<&mut Self>,
+      _cx: &mut Context<'_>,
+      buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+      match self.state {
+        0 => {
+          buf.put_slice(b"ab");
+          self.state = 1;
+          Poll::Ready(Ok(()))
+        }
+        _ => Poll::Ready(Err(io::Error::new(ErrorKind::Other, "boom"))),
+      }
+    }
+  }
+
+  let r = ErrorAfterFirstRead { state: 0 };
+  let mut p = AsyncPeekable::new(r);
+
+  let mut pre = [0u8; 2];
+  p.peek_exact(&mut pre).await.unwrap();
+  assert_eq!(&pre, b"ab");
+
+  let mut out = b"seed".to_vec();
+  let err = p.peek_to_end(&mut out).await.unwrap_err();
+  assert_eq!(err.kind(), ErrorKind::Other);
+
+  // On error, partial data stays in buf — matching std/tokio's
+  // read_to_end contract. The peek prefix "ab" was appended.
+  assert!(out.starts_with(b"seed"));
+  assert!(out.len() > 4); // "seed" + at least the peek prefix
+}
