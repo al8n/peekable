@@ -33,21 +33,21 @@ In network programming, applications frequently need to inspect incoming data be
 
   ```toml
   [dependencies]
-  peekable = "0.5"
+  peekable = "0.6"
   ```
 
 - **Tokio I/O**
 
   ```toml
   [dependencies]
-  peekable = { version = "0.5", features = ["tokio"] }
+  peekable = { version = "0.6", features = ["tokio"] }
   ```
 
 - **Futures I/O**
 
   ```toml
   [dependencies]
-  peekable = { version = "0.5", features = ["future"] }
+  peekable = { version = "0.6", features = ["future"] }
   ```
 
 ### Feature flags

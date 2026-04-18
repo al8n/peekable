@@ -18,6 +18,76 @@ pub type DefaultBuffer = smallvec::SmallVec<[u8; 64]>;
 #[cfg(not(feature = "smallvec"))]
 pub type DefaultBuffer = Vec<u8>;
 
+/// Staging-buffer capacity used by async `peek_to_end` / `peek_to_string`.
+#[cfg(any(feature = "tokio", feature = "future"))]
+const STAGING_CAP: usize = 1024;
+
+/// A fixed-capacity byte buffer for `poll_read` staging in the async
+/// peek futures. Stored as a field in the future struct rather than a
+/// stack-local array, so `poll()` adds zero stack pressure — important
+/// for executors with small per-task stacks.
+///
+/// When the `smallvec` feature is enabled, this is
+/// `SmallVec<[u8; 1024]>` — the bytes live inline in the future struct.
+/// In this crate it is used as a fixed-size 1024-byte staging buffer.
+///
+/// Without `smallvec`, a minimal inline wrapper provides the same
+/// fixed 1024-byte semantics with no heap allocation of its own.
+#[cfg(all(feature = "smallvec", any(feature = "tokio", feature = "future")))]
+pub(crate) type StagingBuf = smallvec::SmallVec<[u8; STAGING_CAP]>;
+
+#[cfg(all(not(feature = "smallvec"), any(feature = "tokio", feature = "future")))]
+pub(crate) struct StagingBuf {
+  buf: [u8; STAGING_CAP],
+}
+
+#[cfg(all(not(feature = "smallvec"), any(feature = "tokio", feature = "future")))]
+impl StagingBuf {
+  /// Creates a new zeroed staging buffer.
+  pub(crate) fn new() -> Self {
+    Self {
+      buf: [0u8; STAGING_CAP],
+    }
+  }
+}
+
+#[cfg(all(not(feature = "smallvec"), any(feature = "tokio", feature = "future")))]
+impl core::ops::Deref for StagingBuf {
+  type Target = [u8];
+  fn deref(&self) -> &[u8] {
+    &self.buf
+  }
+}
+
+#[cfg(all(not(feature = "smallvec"), any(feature = "tokio", feature = "future")))]
+impl core::ops::DerefMut for StagingBuf {
+  fn deref_mut(&mut self) -> &mut [u8] {
+    &mut self.buf
+  }
+}
+
+#[cfg(all(not(feature = "smallvec"), any(feature = "tokio", feature = "future")))]
+impl core::fmt::Debug for StagingBuf {
+  fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    f.debug_struct("StagingBuf")
+      .field("cap", &STAGING_CAP)
+      .finish()
+  }
+}
+
+/// Construct a new [`StagingBuf`].
+#[cfg(any(feature = "tokio", feature = "future"))]
+pub(crate) fn new_staging_buf() -> StagingBuf {
+  #[cfg(feature = "smallvec")]
+  {
+    smallvec::smallvec![0u8; STAGING_CAP]
+  }
+  #[cfg(not(feature = "smallvec"))]
+  {
+    StagingBuf::new()
+  }
+}
+
 /// Extracts the successful type of a `Poll<T>`.
 ///
 /// This macro bakes in propagation of `Pending` signals by returning early.
@@ -570,8 +640,8 @@ where
   /// will continue.
   ///
   /// If any other peek error is encountered then this function immediately
-  /// returns. Any bytes which have alpeeky been peek will be appended to
-  /// `buf`.
+  /// returns. Any bytes which have already been peeked will be appended
+  /// to `buf`, matching [`std::io::Read::read_to_end`]'s contract.
   ///
   /// # Examples
   ///
@@ -606,18 +676,29 @@ where
     let this = &mut *self;
     let inbuf = this.buffer.len();
 
-    let original_buf = buf.len();
+    let original_buf_len = buf.len();
     buf.extend_from_slice(this.buffer.as_slice());
 
-    let fut = this.reader.read_to_end(buf);
-    match fut {
+    match this.reader.read_to_end(buf) {
       Ok(read) => {
         this
           .buffer
-          .extend_from_slice(&buf[original_buf + inbuf..])?;
+          .extend_from_slice(&buf[original_buf_len + inbuf..])?;
         Ok(read + inbuf)
       }
-      Err(e) => Err(e),
+      Err(e) => {
+        // `read_to_end` may have appended partial data before the
+        // error. Mirror those bytes into the peek buffer so the
+        // abstraction stays consistent. Leave `buf` as-is — matching
+        // std's `Read::read_to_end` contract where partial data
+        // remains in the caller's Vec on error.
+        if buf.len() > original_buf_len + inbuf {
+          this
+            .buffer
+            .extend_from_slice(&buf[original_buf_len + inbuf..])?;
+        }
+        Err(e)
+      }
     }
   }
 
@@ -629,9 +710,9 @@ where
   /// # Errors
   ///
   /// If the data in this stream is *not* valid UTF-8 then an error is
-  /// returned and `buf` is unchanged.
-  ///
-  /// See [`peek_to_end`] for other error semantics.
+  /// returned and `buf` is unchanged. On any other I/O error, `buf` is
+  /// also unchanged. Consumed bytes are preserved in the internal peek
+  /// buffer and can be accessed via [`get_ref`](Self::get_ref).
   ///
   /// [`peek_to_end`]: Peek::peek_to_end
   ///
@@ -668,21 +749,47 @@ where
   /// # }
   /// ```
   pub fn peek_to_string(&mut self, buf: &mut String) -> Result<usize> {
-    let s = match core::str::from_utf8(self.buffer.as_slice()) {
-      Ok(s) => s,
-      Err(e) => return Err(invalid_utf8_io_error(e)),
-    };
-
-    buf.push_str(s);
+    // Validate the existing peek buffer up front, but only fail fast
+    // for definitively invalid UTF-8. An error with `error_len() ==
+    // None` means the buffer ends with an incomplete code point (e.g.
+    // a prior `peek_exact` split a multi-byte sequence), which may
+    // become valid once more bytes are read from the reader.
+    if let Err(e) = core::str::from_utf8(self.buffer.as_slice()) {
+      if e.error_len().is_some() {
+        return Err(invalid_utf8_io_error(e));
+      }
+    }
 
     let inbuf = self.buffer.len();
-    let fut = self.reader.read_to_string(buf);
-    match fut {
-      Ok(read) => {
-        self.buffer.extend_from_slice(&buf.as_bytes()[inbuf..])?;
-        Ok(read + inbuf)
+
+    // Read the remaining stream into a raw byte Vec instead of calling
+    // `read_to_string` directly. `read_to_string` restores the caller
+    // String on UTF-8 failure, which hides how many bytes the reader
+    // consumed and makes it impossible to mirror them into the peek
+    // buffer. Reading raw bytes lets us preserve them unconditionally.
+    let mut raw = Vec::new();
+    let reader_result = self.reader.read_to_end(&mut raw);
+
+    // Mirror raw bytes into the peek buffer BEFORE validating UTF-8.
+    // The reader has already consumed them; they must be replayable
+    // via future peek/read calls even if the stream is invalid UTF-8.
+    if !raw.is_empty() {
+      self.buffer.extend_from_slice(&raw)?;
+    }
+
+    // On error (either I/O or InvalidData), leave `buf` unchanged.
+    // This matches std's `Read::read_to_string` contract and the
+    // old `read_to_string`-based implementation. The consumed bytes
+    // are already in the peek buffer — the caller can inspect it
+    // via `get_ref()` if partial data is needed after an error.
+    reader_result?;
+
+    match core::str::from_utf8(self.buffer.as_slice()) {
+      Ok(s) => {
+        buf.push_str(s);
+        Ok(inbuf + raw.len())
       }
-      Err(e) => Err(e),
+      Err(e) => Err(invalid_utf8_io_error(e)),
     }
   }
 

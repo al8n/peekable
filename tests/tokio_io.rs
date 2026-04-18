@@ -563,3 +563,96 @@ async fn fill_peek_buf_pending_truncates_buffer() {
   // length 0.
   assert_eq!(peekable::buffer::Buffer::len(&p.consume()), 0);
 }
+
+// ------------------------------------------------------------------
+// Regression: tokio peek_to_end must not duplicate the prefix on
+// re-poll after Pending. Mirrors the futures_io.rs test.
+// ------------------------------------------------------------------
+
+#[tokio::test]
+async fn peek_to_end_survives_pending_boundary() {
+  let r = FlakyReader::new(
+    b"abcdef".to_vec(),
+    vec![
+      Action::ReadFromInner, // fills peek buffer with first chunk
+      Action::Pending,       // forces a re-poll
+      Action::ReadFromInner, // remainder
+    ],
+  );
+  let mut p = AsyncPeekable::new(r);
+
+  // Pre-fill a couple bytes so the peek buffer has a prefix.
+  let mut pre = [0u8; 2];
+  p.peek(&mut pre).await.unwrap();
+  assert_eq!(&pre, b"ab");
+
+  // peek_to_end must return all bytes exactly once.
+  let mut out = Vec::new();
+  let n = p.peek_to_end(&mut out).await.unwrap();
+  assert_eq!(n, 6);
+  assert_eq!(&out, b"abcdef");
+}
+
+// ------------------------------------------------------------------
+// Regression: tokio peek_to_string with a peek buffer ending
+// mid-codepoint must not spuriously reject the stream.
+// ------------------------------------------------------------------
+
+#[tokio::test]
+async fn peek_to_string_with_mid_codepoint_peek_buffer() {
+  // "é" = [0xC3, 0xA9]. Peek 2 bytes: 'h' + first byte of 'é'.
+  let data = "héllo".as_bytes().to_vec();
+  let r = FlakyReader::new(data, vec![Action::ReadFromInner]);
+  let mut p = AsyncPeekable::new(r);
+
+  // Peek buffer ends with an incomplete UTF-8 sequence.
+  let mut pre = [0u8; 2];
+  p.peek_exact(&mut pre).await.unwrap();
+  assert_eq!(&pre, &[0x68, 0xC3]);
+
+  // peek_to_string must complete the sequence, not reject it.
+  let mut s = String::new();
+  let n = p.peek_to_string(&mut s).await.unwrap();
+  assert_eq!(s, "héllo");
+  assert_eq!(n, "héllo".len());
+}
+
+#[tokio::test]
+async fn peek_to_end_keeps_partial_data_on_error() {
+  struct ErrorAfterFirstRead {
+    state: u8,
+  }
+
+  impl AsyncRead for ErrorAfterFirstRead {
+    fn poll_read(
+      mut self: Pin<&mut Self>,
+      _cx: &mut Context<'_>,
+      buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+      match self.state {
+        0 => {
+          buf.put_slice(b"ab");
+          self.state = 1;
+          Poll::Ready(Ok(()))
+        }
+        _ => Poll::Ready(Err(io::Error::new(ErrorKind::Other, "boom"))),
+      }
+    }
+  }
+
+  let r = ErrorAfterFirstRead { state: 0 };
+  let mut p = AsyncPeekable::new(r);
+
+  let mut pre = [0u8; 2];
+  p.peek_exact(&mut pre).await.unwrap();
+  assert_eq!(&pre, b"ab");
+
+  let mut out = b"seed".to_vec();
+  let err = p.peek_to_end(&mut out).await.unwrap_err();
+  assert_eq!(err.kind(), ErrorKind::Other);
+
+  // On error, partial data stays in buf — matching std/tokio's
+  // read_to_end contract. The peek prefix "ab" was appended.
+  assert!(out.starts_with(b"seed"));
+  assert!(out.len() > 4); // "seed" + at least the peek prefix
+}

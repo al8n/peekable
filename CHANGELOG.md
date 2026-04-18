@@ -2,6 +2,60 @@
 
 ## UNRELEASED
 
+### 0.6.0
+
+#### Fixed (correctness — async futures + tokio)
+
+- **`peek_to_end` / `peek_to_string` / `peek_exact`**: all three async
+  futures (both `future::` and `tokio::` variants) recreated their inner
+  read future on every `poll`, losing partial-read progress across
+  `Pending` boundaries. `peek_to_end` duplicated the peek-buffer prefix
+  each time; `peek_to_string` lost the internal UTF-8 progress state;
+  `peek_exact` copied from offset 0 of the peek buffer on re-poll
+  instead of the continuation offset (`abcd` → `abab`). All six futures
+  are now proper state machines with progress fields (`reader_data_start`,
+  `started`, `filled`) that survive `Pending`. The error-path semantics
+  now match `std::io::Read` contracts: `peek_to_end` leaves any partial
+  data appended to the caller's `Vec` in place on error (matching
+  `read_to_end`), while `peek_to_string` leaves the caller's `String`
+  unchanged on error (matching `read_to_string`).
+
+#### Fixed (correctness — sync)
+
+- **`peek_to_string` buffer corruption with non-empty `String`**: the
+  offset used to mirror reader bytes into the peek buffer was `inbuf`
+  (peek-buffer size) instead of `original_buf_len + inbuf`, so a caller
+  passing a non-empty String would inject the caller's own prefix into
+  the peek buffer. Fixed by saving the caller's pre-existing length.
+
+- **`peek_to_end` / `peek_to_string` consume bytes on error**: both
+  functions returned `Err` without mirroring partial data the reader had
+  already consumed into the peek buffer. For `peek_to_string`, this was
+  especially bad because `Read::read_to_string` rolls the String back on
+  UTF-8 failure, making consumed-byte detection impossible. The sync
+  `peek_to_string` now uses `read_to_end` into a raw `Vec<u8>` and
+  mirrors unconditionally before validating UTF-8.
+
+- **`peek_to_string` error-path semantics**: on any error (I/O or
+  `InvalidData`) the caller's `buf` is left unchanged, matching
+  `std::io::Read::read_to_string`'s contract. Consumed bytes are
+  preserved in the internal peek buffer and accessible via `get_ref()`.
+
+- **`peek_to_end` error-path semantics**: on error, partial data
+  stays in `buf`, matching `std::io::Read::read_to_end`'s contract.
+  Consumed bytes are also mirrored into the internal peek buffer.
+
+#### Changed
+
+- **Staging buffer for async `peek_to_end` / `peek_to_string`**: the
+  per-poll stack-local `[u8; 8192]` array was replaced with a
+  `StagingBuf` field stored in each future struct. When the `smallvec`
+  feature is enabled (default), this is `SmallVec<[u8; 1024]>` — inline
+  in the future struct with automatic heap spill. Without `smallvec`, a
+  minimal fixed-array wrapper provides the same inline semantics. This
+  eliminates stack pressure inside `poll()` for executors with small
+  per-task stacks.
+
 ## RELEASED
 
 ### 0.5.0

@@ -1,4 +1,4 @@
-use ::tokio::io::{AsyncRead, ReadBuf};
+use ::tokio::io::AsyncRead;
 use pin_project_lite::pin_project;
 use std::{
   future::Future,
@@ -10,11 +10,6 @@ use std::{
 
 use super::{AsyncPeekable, Buffer, DefaultBuffer};
 
-/// A future which can be used to easily read exactly enough bytes to fill
-/// a buffer.
-///
-/// Created by the [`AsyncPeekExt::peek_exact`][peek_exact].
-/// [peek_exact]: [super::AsyncPeekExt::peek_exact]
 pub(crate) fn peek_exact<'a, A, B>(
   peekable: &'a mut AsyncPeekable<A, B>,
   buf: &'a mut [u8],
@@ -24,22 +19,21 @@ where
 {
   PeekExact {
     peekable,
-    buf: ReadBuf::new(buf),
+    buf,
+    filled: 0,
     _pin: PhantomPinned,
   }
 }
 
 pin_project! {
-  /// Creates a future which will read exactly enough bytes to fill `buf`,
-  /// returning an error if EOF is hit sooner.
-  ///
-  /// On success the number of bytes is returned
+  /// A future which can be used to easily read exactly enough bytes to fill
+  /// a buffer.
   #[derive(Debug)]
   #[must_use = "futures do nothing unless you `.await` or poll them"]
   pub struct PeekExact<'a, A, B = DefaultBuffer> {
     peekable: &'a mut AsyncPeekable<A, B>,
-    buf: ReadBuf<'a>,
-    // Make this future `!Unpin` for compatibility with async trait methods.
+    buf: &'a mut [u8],
+    filled: usize,
     #[pin]
     _pin: PhantomPinned,
   }
@@ -58,33 +52,44 @@ where
 
   fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<usize>> {
     let me = self.project();
+    let total = me.buf.len();
 
-    let buf_len = me.buf.remaining();
-    let peek_buf_len = me.peekable.buffer.len();
+    // On the first poll, copy what we can from the peek buffer.
+    if *me.filled == 0 {
+      let peek_buf = me.peekable.buffer.as_slice();
+      let from_peek = peek_buf.len().min(total);
+      me.buf[..from_peek].copy_from_slice(&peek_buf[..from_peek]);
+      *me.filled = from_peek;
 
-    if buf_len <= peek_buf_len {
-      me.buf.put_slice(&me.peekable.buffer.as_slice()[..buf_len]);
-      return Poll::Ready(Ok(buf_len));
-    }
-
-    me.buf.put_slice(me.peekable.buffer.as_slice());
-    let mut readed = me.peekable.buffer.len();
-
-    while me.buf.remaining() != 0 {
-      let before = me.buf.filled().len();
-      ready!(Pin::new(&mut me.peekable.reader).poll_read(cx, me.buf))?;
-      let after = me.buf.filled().len();
-      let n = after - before;
-      readed += n;
-      me.peekable
-        .buffer
-        .extend_from_slice(&me.buf.filled()[before..after])?;
-
-      if n == 0 && readed != buf_len {
-        return Err(eof()).into();
+      if *me.filled == total {
+        return Poll::Ready(Ok(total));
       }
     }
 
-    Poll::Ready(Ok(me.buf.capacity()))
+    // Read from the inner reader into the unfilled portion.
+    while *me.filled < total {
+      let mut read_buf = tokio::io::ReadBuf::new(&mut me.buf[*me.filled..]);
+      match Pin::new(&mut me.peekable.reader).poll_read(cx, &mut read_buf) {
+        Poll::Ready(Ok(())) => {}
+        Poll::Ready(Err(e)) if e.kind() == io::ErrorKind::Interrupted => continue,
+        Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+        Poll::Pending => return Poll::Pending,
+      }
+      let n = read_buf.filled().len();
+
+      if n == 0 {
+        return Poll::Ready(Err(eof()));
+      }
+
+      // TODO(al8n): same fallible-Buffer concern as peek_to_end/
+      // peek_to_string — if extend_from_slice fails, the bytes are
+      // in the caller's buf but not mirrored to the peek buffer.
+      me.peekable
+        .buffer
+        .extend_from_slice(&me.buf[*me.filled..*me.filled + n])?;
+      *me.filled += n;
+    }
+
+    Poll::Ready(Ok(total))
   }
 }
