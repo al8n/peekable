@@ -76,6 +76,9 @@ where
         return Poll::Ready(Err(eof()));
       }
 
+      // TODO(al8n): same fallible-Buffer concern as peek_to_end/
+      // peek_to_string — if extend_from_slice fails, the bytes are
+      // in the caller's buf but not mirrored to the peek buffer.
       me.peekable
         .buffer
         .extend_from_slice(&me.buf[*me.filled..*me.filled + n])?;

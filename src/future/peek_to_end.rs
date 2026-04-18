@@ -75,6 +75,12 @@ where
           // Mirror into the peek buffer first — if this fails, the
           // caller's buf stays clean (no partial append without a
           // matching peek-buffer entry).
+          //
+          // TODO(al8n): if `extend_from_slice` fails, the bytes in
+          // `staging` are lost — the reader consumed them but they
+          // can't be stored. A future improvement could read directly
+          // into the peek buffer's tail (resize + poll_read into
+          // buffer.as_mut_slice()[old_len..]) to eliminate this window.
           this.peekable.buffer.extend_from_slice(chunk)?;
           this.buf.extend_from_slice(chunk);
         }

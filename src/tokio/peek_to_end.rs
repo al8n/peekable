@@ -76,6 +76,8 @@ where
           if n == 0 {
             return Poll::Ready(Ok(inbuf + (me.buf.len() - reader_start)));
           }
+          // TODO(al8n): same fallible-Buffer concern as the futures
+          // variant — see future/peek_to_end.rs for details.
           me.peekable.buffer.extend_from_slice(filled)?;
           me.buf.extend_from_slice(filled);
         }

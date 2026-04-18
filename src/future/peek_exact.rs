@@ -61,6 +61,11 @@ impl<P: AsyncRead + Unpin, B: Buffer> Future for PeekExact<'_, P, B> {
 
       // Mirror the newly-read bytes into the peek buffer so the
       // peek abstraction is maintained.
+      //
+      // TODO(al8n): if `extend_from_slice` fails, the bytes are in
+      // `buf` but not in the peek buffer — breaking the abstraction
+      // for custom Buffer impls. Same future-improvement as noted in
+      // peek_to_end.rs and peek_to_string.rs.
       this
         .peekable
         .buffer
