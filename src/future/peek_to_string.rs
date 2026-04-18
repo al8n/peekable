@@ -73,6 +73,14 @@ where
           return Poll::Ready(Ok(this.peekable.buffer.len()));
         }
         Poll::Ready(Ok(n)) => {
+          // TODO(al8n): if `extend_from_slice` fails here, the bytes in
+          // `staging[..n]` are lost — the reader already consumed
+          // them but they can't be stored in the peek buffer. A
+          // future improvement could read directly into the peek
+          // buffer's tail (via `resize` + `poll_read` into
+          // `buffer.as_mut_slice()[old_len..]`) to eliminate this
+          // window, at the cost of splitting the mutable borrow
+          // across `peekable.reader` and `peekable.buffer`.
           this.peekable.buffer.extend_from_slice(&this.staging[..n])?;
         }
         Poll::Ready(Err(e)) if e.kind() == io::ErrorKind::Interrupted => continue,
