@@ -52,8 +52,13 @@ impl<P: AsyncRead + Unpin, B: Buffer> Future for PeekExact<'_, P, B> {
 
     // Read from the inner reader into the unfilled portion of `buf`.
     while this.filled < total {
-      let n =
-        ready!(Pin::new(&mut this.peekable.reader).poll_read(cx, &mut this.buf[this.filled..]))?;
+      let n = match Pin::new(&mut this.peekable.reader).poll_read(cx, &mut this.buf[this.filled..])
+      {
+        Poll::Ready(Ok(n)) => n,
+        Poll::Ready(Err(e)) if e.kind() == io::ErrorKind::Interrupted => continue,
+        Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+        Poll::Pending => return Poll::Pending,
+      };
 
       if n == 0 {
         return Poll::Ready(Err(io::ErrorKind::UnexpectedEof.into()));

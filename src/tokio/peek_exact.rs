@@ -69,7 +69,12 @@ where
     // Read from the inner reader into the unfilled portion.
     while *me.filled < total {
       let mut read_buf = tokio::io::ReadBuf::new(&mut me.buf[*me.filled..]);
-      ready!(Pin::new(&mut me.peekable.reader).poll_read(cx, &mut read_buf))?;
+      match Pin::new(&mut me.peekable.reader).poll_read(cx, &mut read_buf) {
+        Poll::Ready(Ok(())) => {}
+        Poll::Ready(Err(e)) if e.kind() == io::ErrorKind::Interrupted => continue,
+        Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+        Poll::Pending => return Poll::Pending,
+      }
       let n = read_buf.filled().len();
 
       if n == 0 {
