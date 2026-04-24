@@ -776,3 +776,207 @@ fn peek_to_end_keeps_partial_data_on_error() {
     assert!(out.len() > 8);
   });
 }
+
+// ------------------------------------------------------------------
+// Regression tests for:
+//   Finding 1: peek_to_string must preserve partial valid-UTF-8 in
+//              the caller's String on ordinary I/O errors.
+//   Finding 2: a fallible Buffer must not leave the inner reader
+//              advanced past what the peek buffer can replay.
+// ------------------------------------------------------------------
+
+use peekable::buffer::Buffer;
+
+#[derive(Debug, Default)]
+struct BoundedBuffer<const CAP: usize> {
+  inner: Vec<u8>,
+}
+
+impl<const CAP: usize> AsRef<[u8]> for BoundedBuffer<CAP> {
+  fn as_ref(&self) -> &[u8] {
+    &self.inner
+  }
+}
+
+impl<const CAP: usize> Buffer for BoundedBuffer<CAP> {
+  fn new() -> Self {
+    Self { inner: Vec::new() }
+  }
+  fn with_capacity(_: usize) -> Self {
+    Self { inner: Vec::new() }
+  }
+  fn consume(&mut self, rng: std::ops::RangeTo<usize>) {
+    self.inner.drain(rng);
+  }
+  fn clear(&mut self) {
+    self.inner.clear();
+  }
+  fn resize(&mut self, len: usize) -> io::Result<()> {
+    if len > CAP {
+      return Err(io::Error::new(io::ErrorKind::OutOfMemory, "BoundedBuffer cap"));
+    }
+    self.inner.resize(len, 0);
+    Ok(())
+  }
+  fn truncate(&mut self, len: usize) {
+    self.inner.truncate(len);
+  }
+  fn extend_from_slice(&mut self, other: &[u8]) -> io::Result<()> {
+    if self.inner.len() + other.len() > CAP {
+      return Err(io::Error::new(io::ErrorKind::OutOfMemory, "BoundedBuffer cap"));
+    }
+    self.inner.extend_from_slice(other);
+    Ok(())
+  }
+  fn as_slice(&self) -> &[u8] {
+    &self.inner
+  }
+  fn as_mut_slice(&mut self) -> &mut [u8] {
+    &mut self.inner
+  }
+  fn len(&self) -> usize {
+    self.inner.len()
+  }
+  fn is_empty(&self) -> bool {
+    self.inner.is_empty()
+  }
+  fn capacity(&self) -> usize {
+    CAP
+  }
+}
+
+struct AsyncErroringReader {
+  data: Cursor<Vec<u8>>,
+  error_after: usize,
+  served: usize,
+  kind: ErrorKind,
+}
+
+impl AsyncErroringReader {
+  fn new(data: Vec<u8>, error_after: usize, kind: ErrorKind) -> Self {
+    Self {
+      data: Cursor::new(data),
+      error_after,
+      served: 0,
+      kind,
+    }
+  }
+}
+
+impl AsyncRead for AsyncErroringReader {
+  fn poll_read(
+    self: Pin<&mut Self>,
+    cx: &mut Context<'_>,
+    buf: &mut [u8],
+  ) -> Poll<io::Result<usize>> {
+    let me = self.get_mut();
+    if me.served >= me.error_after {
+      return Poll::Ready(Err(io::Error::new(me.kind, "synthetic")));
+    }
+    let cap = (me.error_after - me.served).min(buf.len());
+    match Pin::new(&mut me.data).poll_read(cx, &mut buf[..cap]) {
+      Poll::Ready(Ok(n)) => {
+        me.served += n;
+        Poll::Ready(Ok(n))
+      }
+      other => other,
+    }
+  }
+}
+
+#[test]
+fn async_peek_does_not_advance_reader_when_buffer_extend_fails() {
+  futures::executor::block_on(async {
+    let reader = Cursor::new(vec![1u8, 2, 3, 4]);
+    let mut p: AsyncPeekable<_, BoundedBuffer<0>> = reader.peekable_with_buffer();
+    let mut buf = [0u8; 2];
+    let err = p.peek(&mut buf).await.expect_err("must fail");
+    assert_eq!(err.kind(), ErrorKind::OutOfMemory);
+    let (_, reader) = p.get_mut();
+    let mut out = Vec::new();
+    reader.read_to_end(&mut out).await.unwrap();
+    assert_eq!(out, [1, 2, 3, 4]);
+  });
+}
+
+#[test]
+fn async_peek_exact_does_not_advance_reader_when_buffer_extend_fails() {
+  futures::executor::block_on(async {
+    let reader = Cursor::new(vec![1u8, 2, 3, 4]);
+    let mut p: AsyncPeekable<_, BoundedBuffer<0>> = reader.peekable_with_buffer();
+    let mut buf = [0u8; 4];
+    let err = p.peek_exact(&mut buf).await.expect_err("must fail");
+    assert_eq!(err.kind(), ErrorKind::OutOfMemory);
+    let (peek_slice, reader) = p.get_mut();
+    let have = peek_slice.len();
+    let mut out = Vec::new();
+    reader.read_to_end(&mut out).await.unwrap();
+    assert_eq!(have + out.len(), 4);
+  });
+}
+
+#[test]
+fn async_peek_to_end_preserves_partial_data_on_io_error() {
+  futures::executor::block_on(async {
+    let reader = AsyncErroringReader::new(b"hello".to_vec(), 3, ErrorKind::ConnectionReset);
+    let mut p = reader.peekable();
+    let mut out = Vec::new();
+    let err = p.peek_to_end(&mut out).await.expect_err("io error");
+    assert_eq!(err.kind(), ErrorKind::ConnectionReset);
+    assert_eq!(out, b"hel");
+  });
+}
+
+#[test]
+fn async_peek_to_end_does_not_desync_on_buffer_error() {
+  futures::executor::block_on(async {
+    let reader = Cursor::new(b"abcdef".to_vec());
+    let mut p: AsyncPeekable<_, BoundedBuffer<2>> = reader.peekable_with_buffer();
+    let mut scratch = [0u8; 2];
+    assert_eq!(p.peek(&mut scratch).await.unwrap(), 2);
+    let mut out = Vec::new();
+    let err = p.peek_to_end(&mut out).await.expect_err("must fail");
+    assert_eq!(err.kind(), ErrorKind::OutOfMemory);
+    let (peek_slice, reader) = p.get_mut();
+    let have = peek_slice.len();
+    let mut tail = Vec::new();
+    reader.read_to_end(&mut tail).await.unwrap();
+    assert_eq!(have + tail.len(), 6);
+  });
+}
+
+#[test]
+fn async_peek_to_string_preserves_partial_valid_utf8_on_io_error() {
+  futures::executor::block_on(async {
+    let reader = AsyncErroringReader::new(b"hello".to_vec(), 3, ErrorKind::ConnectionReset);
+    let mut p = reader.peekable();
+    let mut out = String::new();
+    let err = p.peek_to_string(&mut out).await.expect_err("io error");
+    assert_eq!(err.kind(), ErrorKind::ConnectionReset);
+    assert_eq!(out, "hel");
+  });
+}
+
+#[test]
+fn async_peek_to_string_leaves_buf_unchanged_when_partial_bytes_are_invalid_utf8() {
+  futures::executor::block_on(async {
+    let reader = AsyncErroringReader::new(vec![0xE2, 0x82, 0xAC], 2, ErrorKind::ConnectionReset);
+    let mut p = reader.peekable();
+    let mut out = String::from("prefix:");
+    let err = p.peek_to_string(&mut out).await.expect_err("io error");
+    assert_eq!(err.kind(), ErrorKind::ConnectionReset);
+    assert_eq!(out, "prefix:");
+  });
+}
+
+#[test]
+fn async_peek_to_string_returns_invalid_data_for_clean_invalid_utf8() {
+  futures::executor::block_on(async {
+    let reader = Cursor::new(vec![0xFF, 0xFE]);
+    let mut p = reader.peekable();
+    let mut out = String::from("prefix:");
+    let err = p.peek_to_string(&mut out).await.expect_err("must fail");
+    assert_eq!(err.kind(), ErrorKind::InvalidData);
+    assert_eq!(out, "prefix:");
+  });
+}

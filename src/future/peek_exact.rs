@@ -50,31 +50,38 @@ impl<P: AsyncRead + Unpin, B: Buffer> Future for PeekExact<'_, P, B> {
       }
     }
 
-    // Read from the inner reader into the unfilled portion of `buf`.
+    // Read from the inner reader directly into the peek buffer's
+    // tail, then copy newly-produced bytes into the caller's buf.
+    // The reader only advances for bytes already recorded for replay.
     while this.filled < total {
-      let n = match Pin::new(&mut this.peekable.reader).poll_read(cx, &mut this.buf[this.filled..])
+      let old_len = this.peekable.buffer.len();
+      let want = total - this.filled;
+      this.peekable.buffer.resize(old_len + want)?;
+
+      let n = match Pin::new(&mut this.peekable.reader)
+        .poll_read(cx, &mut this.peekable.buffer.as_mut_slice()[old_len..])
       {
         Poll::Ready(Ok(n)) => n,
-        Poll::Ready(Err(e)) if e.kind() == io::ErrorKind::Interrupted => continue,
-        Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
-        Poll::Pending => return Poll::Pending,
+        Poll::Ready(Err(e)) if e.kind() == io::ErrorKind::Interrupted => {
+          this.peekable.buffer.truncate(old_len);
+          continue;
+        }
+        Poll::Ready(Err(e)) => {
+          this.peekable.buffer.truncate(old_len);
+          return Poll::Ready(Err(e));
+        }
+        Poll::Pending => {
+          this.peekable.buffer.truncate(old_len);
+          return Poll::Pending;
+        }
       };
 
+      this.peekable.buffer.truncate(old_len + n);
       if n == 0 {
         return Poll::Ready(Err(io::ErrorKind::UnexpectedEof.into()));
       }
-
-      // Mirror the newly-read bytes into the peek buffer so the
-      // peek abstraction is maintained.
-      //
-      // TODO(al8n): if `extend_from_slice` fails, the bytes are in
-      // `buf` but not in the peek buffer — breaking the abstraction
-      // for custom Buffer impls. Same future-improvement as noted in
-      // peek_to_end.rs and peek_to_string.rs.
-      this
-        .peekable
-        .buffer
-        .extend_from_slice(&this.buf[this.filled..this.filled + n])?;
+      this.buf[this.filled..this.filled + n]
+        .copy_from_slice(&this.peekable.buffer.as_slice()[old_len..old_len + n]);
       this.filled += n;
     }
 

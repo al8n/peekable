@@ -278,14 +278,32 @@ where
       };
     }
 
+    if want_peek == 0 {
+      return Poll::Ready(Ok(0));
+    }
+
+    // Read directly into the peek buffer's tail so the reader only
+    // advances for bytes already recorded for replay.
     let this = self.project();
-    match this.reader.poll_read(cx, buf) {
-      Poll::Ready(Ok(bytes)) => {
-        this.buffer.extend_from_slice(&buf[..bytes])?;
-        Poll::Ready(Ok(bytes))
+    let old_len = this.buffer.len();
+    this.buffer.resize(old_len + want_peek)?;
+    match this
+      .reader
+      .poll_read(cx, &mut this.buffer.as_mut_slice()[old_len..])
+    {
+      Poll::Ready(Ok(n)) => {
+        this.buffer.truncate(old_len + n);
+        buf[..n].copy_from_slice(&this.buffer.as_slice()[old_len..old_len + n]);
+        Poll::Ready(Ok(n))
       }
-      Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
-      Poll::Pending => Poll::Pending,
+      Poll::Ready(Err(e)) => {
+        this.buffer.truncate(old_len);
+        Poll::Ready(Err(e))
+      }
+      Poll::Pending => {
+        this.buffer.truncate(old_len);
+        Poll::Pending
+      }
     }
   }
 }
