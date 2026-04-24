@@ -1,5 +1,5 @@
 use super::{AsyncPeekable, Buffer, DefaultBuffer};
-use crate::READ_CHUNK;
+use crate::grow_peek_buffer;
 use ::tokio::io::AsyncRead;
 
 use pin_project_lite::pin_project;
@@ -64,11 +64,12 @@ where
     // preserves the longest valid-UTF-8 prefix of consumed bytes.
     loop {
       let old_len = me.peekable.buffer.len();
-      let loop_result: io::Result<()> =
-        if let Err(e) = me.peekable.buffer.resize(old_len + READ_CHUNK) {
-          Err(e)
-        } else {
-          let mut tail = tokio::io::ReadBuf::new(&mut me.peekable.buffer.as_mut_slice()[old_len..]);
+      let loop_result: io::Result<()> = match grow_peek_buffer(&mut me.peekable.buffer) {
+        Err(e) => Err(e),
+        Ok(growth) => {
+          let mut tail = tokio::io::ReadBuf::new(
+            &mut me.peekable.buffer.as_mut_slice()[old_len..old_len + growth],
+          );
           match Pin::new(&mut me.peekable.reader).poll_read(cx, &mut tail) {
             Poll::Ready(Ok(())) => {
               let n = tail.filled().len();
@@ -93,7 +94,8 @@ where
               return Poll::Pending;
             }
           }
-        };
+        }
+      };
 
       return Poll::Ready(
         match (
@@ -109,7 +111,20 @@ where
             me.output.push_str(s);
             Err(io)
           }
-          (Err(io), Err(_)) => Err(io),
+          (Err(io), Err(utf8_err)) => {
+            // Preserve the longest valid-UTF-8 prefix of the
+            // consumed bytes; bytes after `valid_up_to()` are either
+            // invalid or an incomplete multi-byte sequence and are
+            // dropped from `output` (still accessible via
+            // `get_ref()`).
+            let vut = utf8_err.valid_up_to();
+            if vut != 0 {
+              let s = core::str::from_utf8(&me.peekable.buffer.as_slice()[..vut])
+                .expect("valid_up_to() must point to a valid UTF-8 prefix");
+              me.output.push_str(s);
+            }
+            Err(io)
+          }
         },
       );
     }

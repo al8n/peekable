@@ -28,6 +28,7 @@ use peekable::future::{AsyncPeek, AsyncPeekExt, AsyncPeekable};
 enum Action {
   Pending,
   Interrupted,
+  WouldBlock,
   OtherErr,
   ReadFromInner,
 }
@@ -62,6 +63,7 @@ impl AsyncRead for FlakyReader {
         Poll::Pending
       }
       Action::Interrupted => Poll::Ready(Err(io::Error::new(ErrorKind::Interrupted, "x"))),
+      Action::WouldBlock => Poll::Ready(Err(io::Error::new(ErrorKind::WouldBlock, "wb"))),
       Action::OtherErr => Poll::Ready(Err(io::Error::new(ErrorKind::Other, "boom"))),
       Action::ReadFromInner => {
         let inner = std::pin::Pin::new(&mut self.inner);
@@ -514,14 +516,24 @@ fn poll_peek_no_buffer_inner_error() {
 
 #[test]
 fn read_when_request_greater_than_buffer_error() {
+  // Peek buffer has 2 bytes; read(5) triggers an inner error on the
+  // top-up. Updated behavior: the 2 buffered bytes are delivered
+  // (can't return Err after writing bytes per AsyncRead contract),
+  // peek buffer is cleared, and the inner error surfaces on the next
+  // read() which delegates directly to the inner reader.
   futures::executor::block_on(async {
     let r = FlakyReader::new(
       b"hello".to_vec(),
-      vec![Action::ReadFromInner, Action::OtherErr],
+      vec![Action::ReadFromInner, Action::OtherErr, Action::OtherErr],
     );
     let mut p = AsyncPeekable::new(r);
     p.peek(&mut [0u8; 2]).await.unwrap();
+
     let mut out = [0u8; 5];
+    let n = p.read(&mut out).await.unwrap();
+    assert_eq!(n, 2);
+    assert_eq!(&out[..2], b"he");
+
     let err = p.read(&mut out).await.unwrap_err();
     assert_eq!(err.kind(), ErrorKind::Other);
   });
@@ -984,5 +996,234 @@ fn async_peek_to_string_returns_invalid_data_for_clean_invalid_utf8() {
     let err = p.peek_to_string(&mut out).await.expect_err("must fail");
     assert_eq!(err.kind(), ErrorKind::InvalidData);
     assert_eq!(out, "prefix:");
+  });
+}
+
+// ---- Coverage for Interrupted / Pending / Err paths -----------------
+
+#[test]
+fn peek_exact_retries_on_interrupted_async() {
+  futures::executor::block_on(async {
+    let r = FlakyReader::new(
+      b"hello".to_vec(),
+      vec![Action::Interrupted, Action::ReadFromInner],
+    );
+    let mut p = AsyncPeekable::new(r);
+    let mut b = [0u8; 5];
+    p.peek_exact(&mut b).await.unwrap();
+    assert_eq!(&b, b"hello");
+  });
+}
+
+#[test]
+fn peek_exact_propagates_error_async() {
+  futures::executor::block_on(async {
+    let r = FlakyReader::new(b"hello".to_vec(), vec![Action::OtherErr]);
+    let mut p = AsyncPeekable::new(r);
+    let mut b = [0u8; 5];
+    let err = p.peek_exact(&mut b).await.unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::Other);
+  });
+}
+
+#[test]
+fn peek_exact_survives_pending_boundary_async() {
+  futures::executor::block_on(async {
+    let r = FlakyReader::new(
+      b"hello".to_vec(),
+      vec![Action::Pending, Action::ReadFromInner],
+    );
+    let mut p = AsyncPeekable::new(r);
+    let mut b = [0u8; 5];
+    p.peek_exact(&mut b).await.unwrap();
+    assert_eq!(&b, b"hello");
+  });
+}
+
+#[test]
+fn peek_to_end_retries_on_interrupted_async() {
+  futures::executor::block_on(async {
+    let r = FlakyReader::new(
+      b"hello".to_vec(),
+      vec![
+        Action::ReadFromInner,
+        Action::Interrupted,
+        Action::ReadFromInner,
+      ],
+    );
+    let mut p = AsyncPeekable::new(r);
+    let mut out = Vec::new();
+    let n = p.peek_to_end(&mut out).await.unwrap();
+    assert_eq!(out, b"hello");
+    assert_eq!(n, 5);
+  });
+}
+
+#[test]
+fn peek_to_end_survives_pending_async() {
+  futures::executor::block_on(async {
+    let r = FlakyReader::new(
+      b"hello".to_vec(),
+      vec![
+        Action::ReadFromInner,
+        Action::Pending,
+        Action::ReadFromInner,
+      ],
+    );
+    let mut p = AsyncPeekable::new(r);
+    let mut out = Vec::new();
+    let n = p.peek_to_end(&mut out).await.unwrap();
+    assert_eq!(out, b"hello");
+    assert_eq!(n, 5);
+  });
+}
+
+#[test]
+fn peek_to_string_retries_on_interrupted_async() {
+  futures::executor::block_on(async {
+    let r = FlakyReader::new(
+      b"hello".to_vec(),
+      vec![
+        Action::ReadFromInner,
+        Action::Interrupted,
+        Action::ReadFromInner,
+      ],
+    );
+    let mut p = AsyncPeekable::new(r);
+    let mut out = String::new();
+    let n = p.peek_to_string(&mut out).await.unwrap();
+    assert_eq!(out, "hello");
+    assert_eq!(n, 5);
+  });
+}
+
+#[test]
+fn peek_to_string_survives_pending_async() {
+  futures::executor::block_on(async {
+    let r = FlakyReader::new(
+      b"hello".to_vec(),
+      vec![
+        Action::ReadFromInner,
+        Action::Pending,
+        Action::ReadFromInner,
+      ],
+    );
+    let mut p = AsyncPeekable::new(r);
+    let mut out = String::new();
+    let n = p.peek_to_string(&mut out).await.unwrap();
+    assert_eq!(out, "hello");
+    assert_eq!(n, 5);
+  });
+}
+
+#[test]
+fn peek_to_string_buffer_resize_fails_preserves_partial_utf8_async() {
+  futures::executor::block_on(async {
+    let reader = Cursor::new(b"hello".to_vec());
+    let mut p: AsyncPeekable<_, BoundedBuffer<2>> = reader.peekable_with_capacity_and_buffer(2);
+    let mut scratch = [0u8; 2];
+    assert_eq!(p.peek(&mut scratch).await.unwrap(), 2);
+    let mut out = String::from("prefix:");
+    let err = p.peek_to_string(&mut out).await.expect_err("must fail");
+    assert_eq!(err.kind(), ErrorKind::OutOfMemory);
+    assert_eq!(out, "prefix:he");
+  });
+}
+
+#[test]
+fn peek_to_end_succeeds_with_small_cap_when_data_fits_async() {
+  futures::executor::block_on(async {
+    let reader = Cursor::new(b"0123456789".to_vec());
+    let mut p: AsyncPeekable<_, BoundedBuffer<100>> = reader.peekable_with_buffer();
+    let mut out = Vec::new();
+    let n = p.peek_to_end(&mut out).await.unwrap();
+    assert_eq!(n, 10);
+    assert_eq!(out, b"0123456789");
+  });
+}
+
+#[test]
+fn peek_to_string_succeeds_with_small_cap_when_data_fits_async() {
+  futures::executor::block_on(async {
+    let reader = Cursor::new(b"hello".to_vec());
+    let mut p: AsyncPeekable<_, BoundedBuffer<100>> = reader.peekable_with_buffer();
+    let mut out = String::new();
+    let n = p.peek_to_string(&mut out).await.unwrap();
+    assert_eq!(n, 5);
+    assert_eq!(out, "hello");
+  });
+}
+
+#[test]
+fn peek_to_string_preserves_valid_prefix_before_incomplete_utf8_on_io_error_async() {
+  futures::executor::block_on(async {
+    let reader = AsyncErroringReader::new(vec![b'h', 0xE2, 0x82], 3, ErrorKind::ConnectionReset);
+    let mut p = reader.peekable();
+    let mut out = String::from("prefix:");
+    let err = p.peek_to_string(&mut out).await.expect_err("io error");
+    assert_eq!(err.kind(), ErrorKind::ConnectionReset);
+    assert_eq!(out, "prefix:h");
+  });
+}
+
+#[test]
+fn peek_retries_interrupted_from_inner_async() {
+  // AsyncPeek trait contract: poll_peek must not surface Interrupted.
+  futures::executor::block_on(async {
+    let r = FlakyReader::new(
+      b"hello".to_vec(),
+      vec![Action::Interrupted, Action::ReadFromInner],
+    );
+    let mut p = AsyncPeekable::new(r);
+    let mut b = [0u8; 5];
+    let n = p.peek(&mut b).await.unwrap();
+    assert_eq!(n, 5);
+    assert_eq!(&b, b"hello");
+  });
+}
+
+#[test]
+fn peek_converts_wouldblock_to_pending_no_buffer_async() {
+  // AsyncPeek contract: WouldBlock must become Pending. Verified with
+  // a manual poll since await would retry until ready.
+  use std::future::Future;
+  let r = FlakyReader::new(b"hello".to_vec(), vec![Action::WouldBlock]);
+  let mut p = AsyncPeekable::new(r);
+  let waker = futures::task::noop_waker();
+  let mut cx = Context::from_waker(&waker);
+  let mut out = [0u8; 5];
+  let mut fut = Box::pin(p.peek(&mut out));
+  match fut.as_mut().poll(&mut cx) {
+    Poll::Pending => {} // expected — WouldBlock converted
+    other => panic!("unexpected: {:?}", other),
+  }
+}
+
+#[test]
+fn peek_converts_wouldblock_to_partial_with_buffer_async() {
+  // With an existing peek buffer, WouldBlock from the top-up returns
+  // a partial peek containing the buffered bytes rather than erroring.
+  use std::future::Future;
+  futures::executor::block_on(async {
+    let r = FlakyReader::new(
+      b"hello".to_vec(),
+      vec![Action::ReadFromInner, Action::WouldBlock],
+    );
+    let mut p = AsyncPeekable::new(r);
+    let mut b = [0u8; 2];
+    p.peek(&mut b).await.unwrap();
+    assert_eq!(&b, b"he");
+
+    let waker = futures::task::noop_waker();
+    let mut cx = Context::from_waker(&waker);
+    let mut out = [0u8; 5];
+    let mut fut = Box::pin(p.peek(&mut out));
+    match fut.as_mut().poll(&mut cx) {
+      Poll::Ready(Ok(n)) => {
+        assert_eq!(n, 2);
+        assert_eq!(&out[..2], b"he");
+      }
+      other => panic!("unexpected: {:?}", other),
+    }
   });
 }

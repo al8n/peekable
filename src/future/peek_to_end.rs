@@ -1,7 +1,7 @@
 use futures_util::AsyncRead;
 
 use super::{AsyncPeekable, Buffer, DefaultBuffer};
-use crate::READ_CHUNK;
+use crate::grow_peek_buffer;
 use std::{
   future::Future,
   io,
@@ -48,10 +48,11 @@ where
 
     loop {
       let old_len = this.peekable.buffer.len();
-      this.peekable.buffer.resize(old_len + READ_CHUNK)?;
-      match Pin::new(&mut this.peekable.reader)
-        .poll_read(cx, &mut this.peekable.buffer.as_mut_slice()[old_len..])
-      {
+      let growth = grow_peek_buffer(&mut this.peekable.buffer)?;
+      match Pin::new(&mut this.peekable.reader).poll_read(
+        cx,
+        &mut this.peekable.buffer.as_mut_slice()[old_len..old_len + growth],
+      ) {
         Poll::Ready(Ok(0)) => {
           this.peekable.buffer.truncate(old_len);
           return Poll::Ready(Ok(this.peekable.buffer.len()));

@@ -1,7 +1,7 @@
 use futures_util::AsyncRead;
 
 use super::{AsyncPeekable, Buffer, DefaultBuffer};
-use crate::READ_CHUNK;
+use crate::grow_peek_buffer;
 use std::{
   future::Future,
   io,
@@ -60,35 +60,34 @@ where
     // longest valid prefix on an I/O error (matching std semantics).
     loop {
       let old_len = this.peekable.buffer.len();
-      let loop_result: io::Result<()> =
-        if let Err(e) = this.peekable.buffer.resize(old_len + READ_CHUNK) {
-          Err(e)
-        } else {
-          match Pin::new(&mut this.peekable.reader)
-            .poll_read(cx, &mut this.peekable.buffer.as_mut_slice()[old_len..])
-          {
-            Poll::Ready(Ok(0)) => {
-              this.peekable.buffer.truncate(old_len);
-              Ok(())
-            }
-            Poll::Ready(Ok(n)) => {
-              this.peekable.buffer.truncate(old_len + n);
-              continue;
-            }
-            Poll::Ready(Err(e)) if e.kind() == io::ErrorKind::Interrupted => {
-              this.peekable.buffer.truncate(old_len);
-              continue;
-            }
-            Poll::Ready(Err(e)) => {
-              this.peekable.buffer.truncate(old_len);
-              Err(e)
-            }
-            Poll::Pending => {
-              this.peekable.buffer.truncate(old_len);
-              return Poll::Pending;
-            }
+      let loop_result: io::Result<()> = match grow_peek_buffer(&mut this.peekable.buffer) {
+        Err(e) => Err(e),
+        Ok(growth) => match Pin::new(&mut this.peekable.reader).poll_read(
+          cx,
+          &mut this.peekable.buffer.as_mut_slice()[old_len..old_len + growth],
+        ) {
+          Poll::Ready(Ok(0)) => {
+            this.peekable.buffer.truncate(old_len);
+            Ok(())
           }
-        };
+          Poll::Ready(Ok(n)) => {
+            this.peekable.buffer.truncate(old_len + n);
+            continue;
+          }
+          Poll::Ready(Err(e)) if e.kind() == io::ErrorKind::Interrupted => {
+            this.peekable.buffer.truncate(old_len);
+            continue;
+          }
+          Poll::Ready(Err(e)) => {
+            this.peekable.buffer.truncate(old_len);
+            Err(e)
+          }
+          Poll::Pending => {
+            this.peekable.buffer.truncate(old_len);
+            return Poll::Pending;
+          }
+        },
+      };
 
       return Poll::Ready(
         match (
@@ -104,7 +103,19 @@ where
             this.buf.push_str(s);
             Err(io)
           }
-          (Err(io), Err(_)) => Err(io),
+          (Err(io), Err(utf8_err)) => {
+            // Preserve the longest valid-UTF-8 prefix of the
+            // consumed bytes; bytes after `valid_up_to()` are either
+            // invalid or an incomplete multi-byte sequence and are
+            // dropped from `buf` (still accessible via `get_ref()`).
+            let vut = utf8_err.valid_up_to();
+            if vut != 0 {
+              let s = core::str::from_utf8(&this.peekable.buffer.as_slice()[..vut])
+                .expect("valid_up_to() must point to a valid UTF-8 prefix");
+              this.buf.push_str(s);
+            }
+            Err(io)
+          }
         },
       );
     }

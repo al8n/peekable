@@ -390,13 +390,27 @@ fn read_when_request_equal_to_buffer() {
 
 #[test]
 fn read_when_request_greater_than_buffer_error() {
+  // Peek 2 bytes into the peek buffer, then read 5 — the inner errors
+  // on the top-up. Updated behavior: the 2 buffered bytes are
+  // delivered (Read contract forbids Err after writing bytes), peek
+  // buffer is cleared, and the inner error surfaces on the next
+  // read() which delegates directly to the inner reader.
   let r = FlakyReader::new(
     b"hello".to_vec(),
-    vec![None, Some(io::Error::new(ErrorKind::Other, "boom"))],
+    vec![
+      None,
+      Some(io::Error::new(ErrorKind::Other, "boom")),
+      Some(io::Error::new(ErrorKind::Other, "boom")),
+    ],
   );
   let mut p = r.peekable();
   p.peek(&mut [0u8; 2]).unwrap();
+
   let mut out = [0u8; 5];
+  let n = p.read(&mut out).unwrap();
+  assert_eq!(n, 2);
+  assert_eq!(&out[..2], b"he");
+
   let err = p.read(&mut out).unwrap_err();
   assert_eq!(err.kind(), ErrorKind::Other);
 }
@@ -846,4 +860,93 @@ fn peek_to_string_returns_invalid_data_for_clean_invalid_utf8() {
   let err = p.peek_to_string(&mut out).expect_err("must fail");
   assert_eq!(err.kind(), ErrorKind::InvalidData);
   assert_eq!(out, "prefix:");
+}
+
+#[test]
+fn peek_to_end_retries_on_interrupted() {
+  let r = FlakyReader::new(
+    b"hello".to_vec(),
+    vec![
+      None,
+      Some(io::Error::new(ErrorKind::Interrupted, "x")),
+      None,
+    ],
+  );
+  let mut p = r.peekable();
+  let mut out = Vec::new();
+  let n = p.peek_to_end(&mut out).unwrap();
+  assert_eq!(n, 5);
+  assert_eq!(out, b"hello");
+}
+
+#[test]
+fn peek_to_string_retries_on_interrupted() {
+  let r = FlakyReader::new(
+    b"hello".to_vec(),
+    vec![
+      None,
+      Some(io::Error::new(ErrorKind::Interrupted, "x")),
+      None,
+    ],
+  );
+  let mut p = r.peekable();
+  let mut out = String::new();
+  let n = p.peek_to_string(&mut out).unwrap();
+  assert_eq!(n, 5);
+  assert_eq!(out, "hello");
+}
+
+#[test]
+fn peek_to_string_buffer_resize_fails_preserves_partial_utf8() {
+  // First read succeeds with 2 bytes ("he"), second resize fails
+  // because cap = 2 and next resize targets 2 + READ_CHUNK.
+  // With all valid-UTF-8 consumed, caller's String keeps "he".
+  let reader = Cursor::new(b"hello".to_vec());
+  let mut p = reader.peekable_with_capacity_and_buffer::<BoundedBuffer<2>>(2);
+  let mut scratch = [0u8; 2];
+  assert_eq!(p.peek(&mut scratch).unwrap(), 2);
+
+  let mut out = String::from("prefix:");
+  let err = p.peek_to_string(&mut out).expect_err("must fail");
+  assert_eq!(err.kind(), ErrorKind::OutOfMemory);
+  assert_eq!(out, "prefix:he");
+}
+
+// ---- Adaptive growth: small-cap buffer must succeed when data fits --
+
+#[test]
+fn peek_to_end_succeeds_with_small_cap_when_data_fits() {
+  // Cap 100, stream 10 bytes. Before the adaptive fix this failed
+  // with OutOfMemory because resize(0+1024) > cap.
+  let reader = Cursor::new(b"0123456789".to_vec());
+  let mut p = reader.peekable_with_buffer::<BoundedBuffer<100>>();
+  let mut out = Vec::new();
+  let n = p.peek_to_end(&mut out).unwrap();
+  assert_eq!(n, 10);
+  assert_eq!(out, b"0123456789");
+}
+
+#[test]
+fn peek_to_string_succeeds_with_small_cap_when_data_fits() {
+  let reader = Cursor::new(b"hello".to_vec());
+  let mut p = reader.peekable_with_buffer::<BoundedBuffer<100>>();
+  let mut out = String::new();
+  let n = p.peek_to_string(&mut out).unwrap();
+  assert_eq!(n, 5);
+  assert_eq!(out, "hello");
+}
+
+// ---- peek_to_string: preserve valid-UTF-8 prefix when tail is mid-codepoint
+
+#[test]
+fn peek_to_string_preserves_valid_prefix_before_incomplete_utf8_on_io_error() {
+  // Reader produces "h" + [0xE2, 0x82] (first 2 bytes of 3-byte €)
+  // then errors. valid_up_to() = 1, so "h" is preserved, the
+  // incomplete multi-byte tail is dropped from the caller's String.
+  let reader = ErroringReader::new(vec![b'h', 0xE2, 0x82], 3, ErrorKind::ConnectionReset);
+  let mut p = reader.peekable();
+  let mut out = String::from("prefix:");
+  let err = p.peek_to_string(&mut out).expect_err("io error");
+  assert_eq!(err.kind(), ErrorKind::ConnectionReset);
+  assert_eq!(out, "prefix:h");
 }

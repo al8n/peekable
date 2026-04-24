@@ -10,7 +10,7 @@ use std::{
 };
 
 use super::{AsyncPeekable, Buffer, DefaultBuffer};
-use crate::READ_CHUNK;
+use crate::grow_peek_buffer;
 
 pin_project! {
   /// Peek to end
@@ -58,8 +58,9 @@ where
 
     loop {
       let old_len = me.peekable.buffer.len();
-      me.peekable.buffer.resize(old_len + READ_CHUNK)?;
-      let mut tail = tokio::io::ReadBuf::new(&mut me.peekable.buffer.as_mut_slice()[old_len..]);
+      let growth = grow_peek_buffer(&mut me.peekable.buffer)?;
+      let mut tail =
+        tokio::io::ReadBuf::new(&mut me.peekable.buffer.as_mut_slice()[old_len..old_len + growth]);
       match Pin::new(&mut me.peekable.reader).poll_read(cx, &mut tail) {
         Poll::Ready(Ok(())) => {
           let n = tail.filled().len();
