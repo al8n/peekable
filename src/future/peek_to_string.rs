@@ -1,7 +1,7 @@
 use futures_util::AsyncRead;
 
 use super::{AsyncPeekable, Buffer, DefaultBuffer};
-use crate::StagingBuf;
+use crate::grow_peek_buffer;
 use std::{
   future::Future,
   io,
@@ -17,8 +17,6 @@ pub struct PeekToString<'a, P, B = DefaultBuffer> {
   buf: &'a mut String,
   /// `true` once the peek-buffer prefix has been validated.
   started: bool,
-  /// Staging buffer for `poll_read` — inline for small reads.
-  staging: StagingBuf,
 }
 
 impl<P: Unpin, B> Unpin for PeekToString<'_, P, B> {}
@@ -29,7 +27,6 @@ impl<'a, P: AsyncRead + Unpin, B: Buffer> PeekToString<'a, P, B> {
       peekable,
       buf,
       started: false,
-      staging: crate::new_staging_buf(),
     }
   }
 }
@@ -57,36 +54,70 @@ where
       this.started = true;
     }
 
-    // Read from the inner reader and accumulate directly into the
-    // peek buffer — no separate `raw: Vec<u8>` needed. This keeps
-    // peak memory at ~2× stream size (peek buffer + caller String)
-    // instead of ~3× (peek buffer + raw + caller String).
+    // Read directly into the peek buffer's tail so the reader only
+    // advances for bytes recorded for replay. Accumulate the reader
+    // outcome; validate UTF-8 after the loop so we can preserve the
+    // longest valid prefix on an I/O error (matching std semantics).
     loop {
-      match Pin::new(&mut this.peekable.reader).poll_read(cx, &mut this.staging) {
-        Poll::Ready(Ok(0)) => {
-          // EOF. Validate the full peek buffer as UTF-8.
-          let s = match core::str::from_utf8(this.peekable.buffer.as_slice()) {
-            Ok(s) => s,
-            Err(e) => return Poll::Ready(Err(super::invalid_utf8_io_error(e))),
-          };
-          this.buf.push_str(s);
-          return Poll::Ready(Ok(this.peekable.buffer.len()));
-        }
-        Poll::Ready(Ok(n)) => {
-          // TODO(al8n): if `extend_from_slice` fails here, the bytes in
-          // `staging[..n]` are lost — the reader already consumed
-          // them but they can't be stored in the peek buffer. A
-          // future improvement could read directly into the peek
-          // buffer's tail (via `resize` + `poll_read` into
-          // `buffer.as_mut_slice()[old_len..]`) to eliminate this
-          // window, at the cost of splitting the mutable borrow
-          // across `peekable.reader` and `peekable.buffer`.
-          this.peekable.buffer.extend_from_slice(&this.staging[..n])?;
-        }
-        Poll::Ready(Err(e)) if e.kind() == io::ErrorKind::Interrupted => continue,
-        Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
-        Poll::Pending => return Poll::Pending,
-      }
+      let old_len = this.peekable.buffer.len();
+      let loop_result: io::Result<()> = match grow_peek_buffer(&mut this.peekable.buffer) {
+        Err(e) => Err(e),
+        Ok(growth) => match Pin::new(&mut this.peekable.reader).poll_read(
+          cx,
+          &mut this.peekable.buffer.as_mut_slice()[old_len..old_len + growth],
+        ) {
+          Poll::Ready(Ok(0)) => {
+            this.peekable.buffer.truncate(old_len);
+            Ok(())
+          }
+          Poll::Ready(Ok(n)) => {
+            this.peekable.buffer.truncate(old_len + n);
+            continue;
+          }
+          Poll::Ready(Err(e)) if e.kind() == io::ErrorKind::Interrupted => {
+            this.peekable.buffer.truncate(old_len);
+            continue;
+          }
+          Poll::Ready(Err(e)) => {
+            this.peekable.buffer.truncate(old_len);
+            Err(e)
+          }
+          Poll::Pending => {
+            this.peekable.buffer.truncate(old_len);
+            return Poll::Pending;
+          }
+        },
+      };
+
+      return Poll::Ready(
+        match (
+          loop_result,
+          core::str::from_utf8(this.peekable.buffer.as_slice()),
+        ) {
+          (Ok(()), Ok(s)) => {
+            this.buf.push_str(s);
+            Ok(this.peekable.buffer.len())
+          }
+          (Ok(()), Err(e)) => Err(super::invalid_utf8_io_error(e)),
+          (Err(io), Ok(s)) => {
+            this.buf.push_str(s);
+            Err(io)
+          }
+          (Err(io), Err(utf8_err)) => {
+            // Preserve the longest valid-UTF-8 prefix of the
+            // consumed bytes; bytes after `valid_up_to()` are either
+            // invalid or an incomplete multi-byte sequence and are
+            // dropped from `buf` (still accessible via `get_ref()`).
+            let vut = utf8_err.valid_up_to();
+            if vut != 0 {
+              let s = core::str::from_utf8(&this.peekable.buffer.as_slice()[..vut])
+                .expect("valid_up_to() must point to a valid UTF-8 prefix");
+              this.buf.push_str(s);
+            }
+            Err(io)
+          }
+        },
+      );
     }
   }
 }

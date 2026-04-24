@@ -29,6 +29,7 @@ use peekable::tokio::{AsyncPeek, AsyncPeekExt, AsyncPeekable};
 enum Action {
   Pending, // return Pending without registering a wake (test will explicit-wake)
   Interrupted,
+  WouldBlock,
   OtherErr,
   ReadFromInner, // read normally
 }
@@ -67,6 +68,7 @@ impl AsyncRead for FlakyReader {
         Poll::Pending
       }
       Action::Interrupted => Poll::Ready(Err(io::Error::new(ErrorKind::Interrupted, "x"))),
+      Action::WouldBlock => Poll::Ready(Err(io::Error::new(ErrorKind::WouldBlock, "wb"))),
       Action::OtherErr => Poll::Ready(Err(io::Error::new(ErrorKind::Other, "boom"))),
       Action::ReadFromInner => {
         let inner = std::pin::Pin::new(&mut self.inner);
@@ -173,17 +175,20 @@ async fn bug2_poll_read_on_pending_does_not_duplicate() {
 }
 
 // ------------------------------------------------------------------
-// Bug 3 regression: error during a read with non-empty peek buffer
-// rolls back filled() instead of corrupting bytes via inner_mut().
+// poll_read with non-empty peek buffer + inner error: the AsyncRead
+// contract forbids returning Err after writing bytes, so the buffered
+// bytes are delivered to the caller's ReadBuf and the inner error
+// surfaces on a subsequent poll_read once the peek buffer is empty.
 // ------------------------------------------------------------------
 
 #[tokio::test]
-async fn bug3_read_error_rolls_back_filled() {
+async fn read_delivers_buffered_bytes_then_surfaces_inner_err() {
   let r = FlakyReader::new(
     b"hello".to_vec(),
     vec![
       Action::ReadFromInner, // initial fill of 3 bytes
-      Action::OtherErr,      // read attempt errors
+      Action::OtherErr,      // top-up errors
+      Action::OtherErr,      // next direct read also errors
     ],
   );
   let mut p = AsyncPeekable::from(r);
@@ -192,10 +197,22 @@ async fn bug3_read_error_rolls_back_filled() {
   p.peek(&mut b).await.unwrap();
   assert_eq!(&b, b"hel");
 
-  // Read 5 — should hit error, and after the fix our caller's buf is
-  // unchanged from the rollback.
+  // First poll_read(5): we have 3 buffered bytes, inner errors on
+  // top-up. Expect Ok(()) with 3 bytes filled from the peek buffer.
   let waker = futures::task::noop_waker();
   let mut cx = Context::from_waker(&waker);
+  let mut out = [0u8; 5];
+  let mut buf = ReadBuf::new(&mut out);
+  let pinned = Pin::new(&mut p);
+  match AsyncRead::poll_read(pinned, &mut cx, &mut buf) {
+    Poll::Ready(Ok(())) => {
+      assert_eq!(buf.filled(), b"hel");
+    }
+    other => panic!("unexpected: {:?}", other),
+  }
+
+  // Second poll_read: peek buffer is now empty, delegates to inner,
+  // which returns Other. Caller sees the error.
   let mut out = [0u8; 5];
   let mut buf = ReadBuf::new(&mut out);
   let pinned = Pin::new(&mut p);
@@ -203,12 +220,6 @@ async fn bug3_read_error_rolls_back_filled() {
     Poll::Ready(Err(e)) => assert_eq!(e.kind(), ErrorKind::Other),
     other => panic!("unexpected: {:?}", other),
   }
-  assert_eq!(
-    buf.filled().len(),
-    0,
-    "filled not rolled back: {:?}",
-    buf.filled()
-  );
 }
 
 // ------------------------------------------------------------------
@@ -655,4 +666,401 @@ async fn peek_to_end_keeps_partial_data_on_error() {
   // read_to_end contract. The peek prefix "ab" was appended.
   assert!(out.starts_with(b"seed"));
   assert!(out.len() > 4); // "seed" + at least the peek prefix
+}
+
+// ------------------------------------------------------------------
+// Regression tests for:
+//   Finding 1: peek_to_string must preserve partial valid-UTF-8 in
+//              the caller's String on ordinary I/O errors.
+//   Finding 2: a fallible Buffer must not leave the inner reader
+//              advanced past what the peek buffer can replay.
+// ------------------------------------------------------------------
+
+use peekable::buffer::Buffer;
+
+#[derive(Debug, Default)]
+struct BoundedBuffer<const CAP: usize> {
+  inner: Vec<u8>,
+}
+
+impl<const CAP: usize> AsRef<[u8]> for BoundedBuffer<CAP> {
+  fn as_ref(&self) -> &[u8] {
+    &self.inner
+  }
+}
+
+impl<const CAP: usize> Buffer for BoundedBuffer<CAP> {
+  fn new() -> Self {
+    Self { inner: Vec::new() }
+  }
+  fn with_capacity(_: usize) -> Self {
+    Self { inner: Vec::new() }
+  }
+  fn consume(&mut self, rng: std::ops::RangeTo<usize>) {
+    self.inner.drain(rng);
+  }
+  fn clear(&mut self) {
+    self.inner.clear();
+  }
+  fn resize(&mut self, len: usize) -> io::Result<()> {
+    if len > CAP {
+      return Err(io::Error::new(
+        io::ErrorKind::OutOfMemory,
+        "BoundedBuffer cap",
+      ));
+    }
+    self.inner.resize(len, 0);
+    Ok(())
+  }
+  fn truncate(&mut self, len: usize) {
+    self.inner.truncate(len);
+  }
+  fn extend_from_slice(&mut self, other: &[u8]) -> io::Result<()> {
+    if self.inner.len() + other.len() > CAP {
+      return Err(io::Error::new(
+        io::ErrorKind::OutOfMemory,
+        "BoundedBuffer cap",
+      ));
+    }
+    self.inner.extend_from_slice(other);
+    Ok(())
+  }
+  fn as_slice(&self) -> &[u8] {
+    &self.inner
+  }
+  fn as_mut_slice(&mut self) -> &mut [u8] {
+    &mut self.inner
+  }
+  fn len(&self) -> usize {
+    self.inner.len()
+  }
+  fn is_empty(&self) -> bool {
+    self.inner.is_empty()
+  }
+  fn capacity(&self) -> usize {
+    CAP
+  }
+}
+
+struct AsyncErroringReader {
+  data: Cursor<Vec<u8>>,
+  error_after: usize,
+  served: usize,
+  kind: ErrorKind,
+}
+
+impl AsyncErroringReader {
+  fn new(data: Vec<u8>, error_after: usize, kind: ErrorKind) -> Self {
+    Self {
+      data: Cursor::new(data),
+      error_after,
+      served: 0,
+      kind,
+    }
+  }
+}
+
+impl AsyncRead for AsyncErroringReader {
+  fn poll_read(
+    self: Pin<&mut Self>,
+    _cx: &mut Context<'_>,
+    buf: &mut ReadBuf<'_>,
+  ) -> Poll<io::Result<()>> {
+    let me = self.get_mut();
+    if me.served >= me.error_after {
+      return Poll::Ready(Err(io::Error::new(me.kind, "synthetic")));
+    }
+    let room = (me.error_after - me.served).min(buf.remaining());
+    if room == 0 {
+      return Poll::Ready(Ok(()));
+    }
+    let start = me.data.position() as usize;
+    let end = (start + room).min(me.data.get_ref().len());
+    let len = end - start;
+    let slice = me.data.get_ref()[start..end].to_vec();
+    buf.put_slice(&slice);
+    me.data.set_position(end as u64);
+    me.served += len;
+    Poll::Ready(Ok(()))
+  }
+}
+
+#[tokio::test]
+async fn tokio_peek_does_not_advance_reader_when_buffer_extend_fails() {
+  let reader = Cursor::new(vec![1u8, 2, 3, 4]);
+  let mut p: AsyncPeekable<_, BoundedBuffer<0>> = reader.peekable_with_buffer();
+  let mut buf = [0u8; 2];
+  let err = p.peek(&mut buf).await.expect_err("must fail");
+  assert_eq!(err.kind(), ErrorKind::OutOfMemory);
+  let (_, reader) = p.get_mut();
+  let mut out = Vec::new();
+  reader.read_to_end(&mut out).await.unwrap();
+  assert_eq!(out, [1, 2, 3, 4]);
+}
+
+#[tokio::test]
+async fn tokio_peek_exact_does_not_advance_reader_when_buffer_extend_fails() {
+  let reader = Cursor::new(vec![1u8, 2, 3, 4]);
+  let mut p: AsyncPeekable<_, BoundedBuffer<0>> = reader.peekable_with_buffer();
+  let mut buf = [0u8; 4];
+  let err = p.peek_exact(&mut buf).await.expect_err("must fail");
+  assert_eq!(err.kind(), ErrorKind::OutOfMemory);
+  let (peek_slice, reader) = p.get_mut();
+  let have = peek_slice.len();
+  let mut out = Vec::new();
+  reader.read_to_end(&mut out).await.unwrap();
+  assert_eq!(have + out.len(), 4);
+}
+
+#[tokio::test]
+async fn tokio_peek_to_end_preserves_partial_data_on_io_error() {
+  let reader = AsyncErroringReader::new(b"hello".to_vec(), 3, ErrorKind::ConnectionReset);
+  let mut p = reader.peekable();
+  let mut out = Vec::new();
+  let err = p.peek_to_end(&mut out).await.expect_err("io error");
+  assert_eq!(err.kind(), ErrorKind::ConnectionReset);
+  assert_eq!(out, b"hel");
+}
+
+#[tokio::test]
+async fn tokio_peek_to_end_does_not_desync_on_buffer_error() {
+  let reader = Cursor::new(b"abcdef".to_vec());
+  let mut p: AsyncPeekable<_, BoundedBuffer<2>> = reader.peekable_with_buffer();
+  let mut scratch = [0u8; 2];
+  assert_eq!(p.peek(&mut scratch).await.unwrap(), 2);
+  let mut out = Vec::new();
+  let err = p.peek_to_end(&mut out).await.expect_err("must fail");
+  assert_eq!(err.kind(), ErrorKind::OutOfMemory);
+  let (peek_slice, reader) = p.get_mut();
+  let have = peek_slice.len();
+  let mut tail = Vec::new();
+  reader.read_to_end(&mut tail).await.unwrap();
+  assert_eq!(have + tail.len(), 6);
+}
+
+#[tokio::test]
+async fn tokio_peek_to_string_preserves_partial_valid_utf8_on_io_error() {
+  let reader = AsyncErroringReader::new(b"hello".to_vec(), 3, ErrorKind::ConnectionReset);
+  let mut p = reader.peekable();
+  let mut out = String::new();
+  let err = p.peek_to_string(&mut out).await.expect_err("io error");
+  assert_eq!(err.kind(), ErrorKind::ConnectionReset);
+  assert_eq!(out, "hel");
+}
+
+#[tokio::test]
+async fn tokio_peek_to_string_leaves_buf_unchanged_when_partial_bytes_are_invalid_utf8() {
+  let reader = AsyncErroringReader::new(vec![0xE2, 0x82, 0xAC], 2, ErrorKind::ConnectionReset);
+  let mut p = reader.peekable();
+  let mut out = String::from("prefix:");
+  let err = p.peek_to_string(&mut out).await.expect_err("io error");
+  assert_eq!(err.kind(), ErrorKind::ConnectionReset);
+  assert_eq!(out, "prefix:");
+}
+
+#[tokio::test]
+async fn tokio_peek_to_string_returns_invalid_data_for_clean_invalid_utf8() {
+  let reader = Cursor::new(vec![0xFF, 0xFE]);
+  let mut p = reader.peekable();
+  let mut out = String::from("prefix:");
+  let err = p.peek_to_string(&mut out).await.expect_err("must fail");
+  assert_eq!(err.kind(), ErrorKind::InvalidData);
+  assert_eq!(out, "prefix:");
+}
+
+// ---- Coverage for Interrupted / Pending / Err paths -----------------
+
+#[tokio::test(flavor = "current_thread")]
+async fn tokio_peek_exact_retries_on_interrupted() {
+  let r = FlakyReader::new(
+    b"hello".to_vec(),
+    vec![Action::Interrupted, Action::ReadFromInner],
+  );
+  let mut p = AsyncPeekable::from(r);
+  let mut b = [0u8; 5];
+  p.peek_exact(&mut b).await.unwrap();
+  assert_eq!(&b, b"hello");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn tokio_peek_exact_propagates_error() {
+  let r = FlakyReader::new(b"hello".to_vec(), vec![Action::OtherErr]);
+  let mut p = AsyncPeekable::from(r);
+  let mut b = [0u8; 5];
+  let err = p.peek_exact(&mut b).await.unwrap_err();
+  assert_eq!(err.kind(), ErrorKind::Other);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn tokio_peek_exact_survives_pending_boundary() {
+  let r = FlakyReader::new(
+    b"hello".to_vec(),
+    vec![Action::Pending, Action::ReadFromInner],
+  );
+  let mut p = AsyncPeekable::from(r);
+  let mut b = [0u8; 5];
+  p.peek_exact(&mut b).await.unwrap();
+  assert_eq!(&b, b"hello");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn tokio_peek_to_end_retries_on_interrupted() {
+  let r = FlakyReader::new(
+    b"hello".to_vec(),
+    vec![
+      Action::ReadFromInner,
+      Action::Interrupted,
+      Action::ReadFromInner,
+    ],
+  );
+  let mut p = AsyncPeekable::from(r);
+  let mut out = Vec::new();
+  let n = p.peek_to_end(&mut out).await.unwrap();
+  assert_eq!(out, b"hello");
+  assert_eq!(n, 5);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn tokio_peek_to_end_survives_pending() {
+  let r = FlakyReader::new(
+    b"hello".to_vec(),
+    vec![
+      Action::ReadFromInner,
+      Action::Pending,
+      Action::ReadFromInner,
+    ],
+  );
+  let mut p = AsyncPeekable::from(r);
+  let mut out = Vec::new();
+  let n = p.peek_to_end(&mut out).await.unwrap();
+  assert_eq!(out, b"hello");
+  assert_eq!(n, 5);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn tokio_peek_to_string_retries_on_interrupted() {
+  let r = FlakyReader::new(
+    b"hello".to_vec(),
+    vec![
+      Action::ReadFromInner,
+      Action::Interrupted,
+      Action::ReadFromInner,
+    ],
+  );
+  let mut p = AsyncPeekable::from(r);
+  let mut out = String::new();
+  let n = p.peek_to_string(&mut out).await.unwrap();
+  assert_eq!(out, "hello");
+  assert_eq!(n, 5);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn tokio_peek_to_string_survives_pending() {
+  let r = FlakyReader::new(
+    b"hello".to_vec(),
+    vec![
+      Action::ReadFromInner,
+      Action::Pending,
+      Action::ReadFromInner,
+    ],
+  );
+  let mut p = AsyncPeekable::from(r);
+  let mut out = String::new();
+  let n = p.peek_to_string(&mut out).await.unwrap();
+  assert_eq!(out, "hello");
+  assert_eq!(n, 5);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn tokio_peek_to_string_buffer_resize_fails_preserves_partial_utf8() {
+  let reader = Cursor::new(b"hello".to_vec());
+  let mut p: AsyncPeekable<_, BoundedBuffer<2>> = reader.peekable_with_capacity_and_buffer(2);
+  let mut scratch = [0u8; 2];
+  assert_eq!(p.peek(&mut scratch).await.unwrap(), 2);
+  let mut out = String::from("prefix:");
+  let err = p.peek_to_string(&mut out).await.expect_err("must fail");
+  assert_eq!(err.kind(), ErrorKind::OutOfMemory);
+  assert_eq!(out, "prefix:he");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn tokio_peek_to_end_succeeds_with_small_cap_when_data_fits() {
+  let reader = Cursor::new(b"0123456789".to_vec());
+  let mut p: AsyncPeekable<_, BoundedBuffer<100>> = reader.peekable_with_buffer();
+  let mut out = Vec::new();
+  let n = p.peek_to_end(&mut out).await.unwrap();
+  assert_eq!(n, 10);
+  assert_eq!(out, b"0123456789");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn tokio_peek_to_string_succeeds_with_small_cap_when_data_fits() {
+  let reader = Cursor::new(b"hello".to_vec());
+  let mut p: AsyncPeekable<_, BoundedBuffer<100>> = reader.peekable_with_buffer();
+  let mut out = String::new();
+  let n = p.peek_to_string(&mut out).await.unwrap();
+  assert_eq!(n, 5);
+  assert_eq!(out, "hello");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn tokio_peek_to_string_preserves_valid_prefix_before_incomplete_utf8_on_io_error() {
+  let reader = AsyncErroringReader::new(vec![b'h', 0xE2, 0x82], 3, ErrorKind::ConnectionReset);
+  let mut p = reader.peekable();
+  let mut out = String::from("prefix:");
+  let err = p.peek_to_string(&mut out).await.expect_err("io error");
+  assert_eq!(err.kind(), ErrorKind::ConnectionReset);
+  assert_eq!(out, "prefix:h");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn tokio_peek_retries_interrupted_from_inner() {
+  let r = FlakyReader::new(
+    b"hello".to_vec(),
+    vec![Action::Interrupted, Action::ReadFromInner],
+  );
+  let mut p = AsyncPeekable::from(r);
+  let mut b = [0u8; 5];
+  let n = p.peek(&mut b).await.unwrap();
+  assert_eq!(n, 5);
+  assert_eq!(&b, b"hello");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn tokio_peek_converts_wouldblock_to_pending_no_buffer() {
+  use std::future::Future;
+  let r = FlakyReader::new(b"hello".to_vec(), vec![Action::WouldBlock]);
+  let mut p = AsyncPeekable::from(r);
+  let waker = futures::task::noop_waker();
+  let mut cx = Context::from_waker(&waker);
+  let mut out = [0u8; 5];
+  let mut fut = Box::pin(p.peek(&mut out));
+  match fut.as_mut().poll(&mut cx) {
+    Poll::Pending => {} // expected
+    other => panic!("unexpected: {:?}", other),
+  }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn tokio_peek_converts_wouldblock_to_partial_with_buffer() {
+  let r = FlakyReader::new(
+    b"hello".to_vec(),
+    vec![Action::ReadFromInner, Action::WouldBlock],
+  );
+  let mut p = AsyncPeekable::from(r);
+  let mut b = [0u8; 2];
+  p.peek(&mut b).await.unwrap();
+  assert_eq!(&b, b"he");
+
+  let waker = futures::task::noop_waker();
+  let mut cx = Context::from_waker(&waker);
+  let mut out = [0u8; 5];
+  let mut buf = ReadBuf::new(&mut out);
+  let pinned = Pin::new(&mut p);
+  match pinned.poll_peek(&mut cx, &mut buf) {
+    Poll::Ready(Ok(())) => {
+      assert_eq!(buf.filled(), b"he");
+    }
+    other => panic!("unexpected: {:?}", other),
+  }
 }

@@ -5,7 +5,6 @@
 
 use buffer::Buffer;
 use std::{
-  cmp,
   io::{IoSliceMut, Read, Result, Write},
   mem,
 };
@@ -18,75 +17,11 @@ pub type DefaultBuffer = smallvec::SmallVec<[u8; 64]>;
 #[cfg(not(feature = "smallvec"))]
 pub type DefaultBuffer = Vec<u8>;
 
-/// Staging-buffer capacity used by async `peek_to_end` / `peek_to_string`.
-#[cfg(any(feature = "tokio", feature = "future"))]
-const STAGING_CAP: usize = 1024;
-
-/// A fixed-capacity byte buffer for `poll_read` staging in the async
-/// peek futures. Stored as a field in the future struct rather than a
-/// stack-local array, so `poll()` adds zero stack pressure — important
-/// for executors with small per-task stacks.
-///
-/// When the `smallvec` feature is enabled, this is
-/// `SmallVec<[u8; 1024]>` — the bytes live inline in the future struct.
-/// In this crate it is used as a fixed-size 1024-byte staging buffer.
-///
-/// Without `smallvec`, a minimal inline wrapper provides the same
-/// fixed 1024-byte semantics with no heap allocation of its own.
-#[cfg(all(feature = "smallvec", any(feature = "tokio", feature = "future")))]
-pub(crate) type StagingBuf = smallvec::SmallVec<[u8; STAGING_CAP]>;
-
-#[cfg(all(not(feature = "smallvec"), any(feature = "tokio", feature = "future")))]
-pub(crate) struct StagingBuf {
-  buf: [u8; STAGING_CAP],
-}
-
-#[cfg(all(not(feature = "smallvec"), any(feature = "tokio", feature = "future")))]
-impl StagingBuf {
-  /// Creates a new zeroed staging buffer.
-  pub(crate) fn new() -> Self {
-    Self {
-      buf: [0u8; STAGING_CAP],
-    }
-  }
-}
-
-#[cfg(all(not(feature = "smallvec"), any(feature = "tokio", feature = "future")))]
-impl core::ops::Deref for StagingBuf {
-  type Target = [u8];
-  fn deref(&self) -> &[u8] {
-    &self.buf
-  }
-}
-
-#[cfg(all(not(feature = "smallvec"), any(feature = "tokio", feature = "future")))]
-impl core::ops::DerefMut for StagingBuf {
-  fn deref_mut(&mut self) -> &mut [u8] {
-    &mut self.buf
-  }
-}
-
-#[cfg(all(not(feature = "smallvec"), any(feature = "tokio", feature = "future")))]
-impl core::fmt::Debug for StagingBuf {
-  fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-    f.debug_struct("StagingBuf")
-      .field("cap", &STAGING_CAP)
-      .finish()
-  }
-}
-
-/// Construct a new [`StagingBuf`].
-#[cfg(any(feature = "tokio", feature = "future"))]
-pub(crate) fn new_staging_buf() -> StagingBuf {
-  #[cfg(feature = "smallvec")]
-  {
-    smallvec::smallvec![0u8; STAGING_CAP]
-  }
-  #[cfg(not(feature = "smallvec"))]
-  {
-    StagingBuf::new()
-  }
-}
+/// Chunk size used by `peek_to_end` / `peek_to_string` for growing
+/// the peek buffer in unbounded read loops. Applies to both sync and
+/// async implementations — the peek buffer itself is now the staging
+/// area, so no separate fixed-size staging buffer is needed.
+const READ_CHUNK: usize = 1024;
 
 /// Extracts the successful type of a `Poll<T>`.
 ///
@@ -149,29 +84,29 @@ where
     // check if the peek buffer has data
     let buffer_len = peek_buf.len();
     if buffer_len > 0 {
-      return match want_peek.cmp(&buffer_len) {
-        cmp::Ordering::Less => {
-          buf.copy_from_slice(&peek_buf[..want_peek]);
-          this.buffer.consume(..want_peek);
-          return Ok(want_peek);
-        }
-        cmp::Ordering::Equal => {
-          buf.copy_from_slice(peek_buf);
-          this.buffer.clear();
-          return Ok(want_peek);
-        }
-        cmp::Ordering::Greater => {
-          buf[..buffer_len].copy_from_slice(peek_buf);
-          buf = &mut buf[buffer_len..];
-          match this.reader.read(buf) {
-            Ok(bytes) => {
-              this.buffer.clear();
-              Ok(bytes + buffer_len)
-            }
-            Err(e) => Err(e),
-          }
-        }
-      };
+      if want_peek < buffer_len {
+        buf.copy_from_slice(&peek_buf[..want_peek]);
+        this.buffer.consume(..want_peek);
+        return Ok(want_peek);
+      } else if want_peek == buffer_len {
+        buf.copy_from_slice(peek_buf);
+        this.buffer.clear();
+        return Ok(want_peek);
+      } else {
+        buf[..buffer_len].copy_from_slice(peek_buf);
+        buf = &mut buf[buffer_len..];
+        let result = this.reader.read(buf);
+        // Always clear: the peek buffer's contents have been
+        // delivered to the caller. `Read` contract forbids returning
+        // Err after writing bytes, so surface the partial success on
+        // inner error; the caller's next read() will delegate to the
+        // inner reader and see the persistent error then.
+        this.buffer.clear();
+        return match result {
+          Ok(bytes) => Ok(bytes + buffer_len),
+          Err(_) => Ok(buffer_len),
+        };
+      }
     }
 
     this.reader.read(buf)
@@ -552,55 +487,65 @@ where
     let buffer_len = self.buffer.len();
 
     if buffer_len > 0 {
-      return match want_peek.cmp(&buffer_len) {
-        cmp::Ordering::Less => {
-          buf.copy_from_slice(&self.buffer.as_slice()[..want_peek]);
-          Ok(want_peek)
+      if want_peek < buffer_len {
+        buf.copy_from_slice(&self.buffer.as_slice()[..want_peek]);
+        return Ok(want_peek);
+      } else if want_peek == buffer_len {
+        buf.copy_from_slice(self.buffer.as_slice());
+        return Ok(want_peek);
+      }
+      // Need to top up from the reader.
+      self.buffer.resize(want_peek)?;
+      // Retry on `Interrupted` per the documented contract.
+      let result = loop {
+        match self
+          .reader
+          .read(&mut self.buffer.as_mut_slice()[buffer_len..])
+        {
+          Ok(n) => break Ok(n),
+          Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+          Err(e) => break Err(e),
         }
-        cmp::Ordering::Equal => {
-          buf.copy_from_slice(self.buffer.as_slice());
-          Ok(want_peek)
+      };
+      return match result {
+        Ok(n) => {
+          self.buffer.truncate(n + buffer_len);
+          buf[..buffer_len + n].copy_from_slice(self.buffer.as_slice());
+          Ok(buffer_len + n)
         }
-        cmp::Ordering::Greater => {
-          self.buffer.resize(want_peek)?;
-          // Retry on `Interrupted` per the documented contract.
-          let result = loop {
-            match self
-              .reader
-              .read(&mut self.buffer.as_mut_slice()[buffer_len..])
-            {
-              Ok(n) => break Ok(n),
-              Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-              Err(e) => break Err(e),
-            }
-          };
-          match result {
-            Ok(n) => {
-              self.buffer.truncate(n + buffer_len);
-              buf[..buffer_len + n].copy_from_slice(self.buffer.as_slice());
-              Ok(buffer_len + n)
-            }
-            Err(e) => {
-              // Roll back the resize so the peek buffer doesn't carry
-              // ghost zero-bytes that a subsequent call would return as
-              // "real" peeked data.
-              self.buffer.truncate(buffer_len);
-              Err(e)
-            }
-          }
+        Err(e) => {
+          // Roll back the resize so the peek buffer doesn't carry
+          // ghost zero-bytes that a subsequent call would return as
+          // "real" peeked data.
+          self.buffer.truncate(buffer_len);
+          Err(e)
         }
       };
     }
 
+    if want_peek == 0 {
+      return Ok(0);
+    }
+
+    // Read directly into the peek buffer's tail so the inner reader
+    // only advances for bytes that are already recorded for replay —
+    // a fallible Buffer can fail on `resize` before we touch the
+    // reader, and truncation rolls back on any read error.
     let this = self;
+    let old_len = this.buffer.len();
+    this.buffer.resize(old_len + want_peek)?;
     loop {
-      match this.reader.read(buf) {
-        Ok(bytes) => {
-          this.buffer.extend_from_slice(&buf[..bytes])?;
-          return Ok(bytes);
+      match this.reader.read(&mut this.buffer.as_mut_slice()[old_len..]) {
+        Ok(n) => {
+          this.buffer.truncate(old_len + n);
+          buf[..n].copy_from_slice(&this.buffer.as_slice()[old_len..old_len + n]);
+          return Ok(n);
         }
         Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-        Err(e) => return Err(e),
+        Err(e) => {
+          this.buffer.truncate(old_len);
+          return Err(e);
+        }
       }
     }
   }
@@ -674,30 +619,39 @@ where
   /// ```
   pub fn peek_to_end(&mut self, buf: &mut Vec<u8>) -> Result<usize> {
     let this = &mut *self;
-    let inbuf = this.buffer.len();
 
-    let original_buf_len = buf.len();
+    // Copy the existing peek-buffer prefix into the caller's buf up
+    // front, then read successive chunks directly into the peek
+    // buffer's tail and copy them into `buf` once mirrored. This way
+    // the reader only advances for bytes already recorded for replay.
     buf.extend_from_slice(this.buffer.as_slice());
 
-    match this.reader.read_to_end(buf) {
-      Ok(read) => {
-        this
-          .buffer
-          .extend_from_slice(&buf[original_buf_len + inbuf..])?;
-        Ok(read + inbuf)
-      }
-      Err(e) => {
-        // `read_to_end` may have appended partial data before the
-        // error. Mirror those bytes into the peek buffer so the
-        // abstraction stays consistent. Leave `buf` as-is — matching
-        // std's `Read::read_to_end` contract where partial data
-        // remains in the caller's Vec on error.
-        if buf.len() > original_buf_len + inbuf {
-          this
-            .buffer
-            .extend_from_slice(&buf[original_buf_len + inbuf..])?;
+    loop {
+      let old_len = this.buffer.len();
+      let growth = grow_peek_buffer(&mut this.buffer)?;
+      match this
+        .reader
+        .read(&mut this.buffer.as_mut_slice()[old_len..old_len + growth])
+      {
+        Ok(0) => {
+          this.buffer.truncate(old_len);
+          return Ok(this.buffer.len());
         }
-        Err(e)
+        Ok(n) => {
+          this.buffer.truncate(old_len + n);
+          buf.extend_from_slice(&this.buffer.as_slice()[old_len..old_len + n]);
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {
+          this.buffer.truncate(old_len);
+          continue;
+        }
+        Err(e) => {
+          // Partial bytes from successful prior iterations are already
+          // in both the peek buffer and `buf`; leaving them in `buf`
+          // matches std `Read::read_to_end`.
+          this.buffer.truncate(old_len);
+          return Err(e);
+        }
       }
     }
   }
@@ -710,9 +664,20 @@ where
   /// # Errors
   ///
   /// If the data in this stream is *not* valid UTF-8 then an error is
-  /// returned and `buf` is unchanged. On any other I/O error, `buf` is
-  /// also unchanged. Consumed bytes are preserved in the internal peek
-  /// buffer and can be accessed via [`get_ref`](Self::get_ref).
+  /// returned and `buf` is unchanged.
+  ///
+  /// If an I/O error occurs, any bytes the reader has already produced
+  /// remain in the internal peek buffer (accessible via
+  /// [`get_ref`](Self::get_ref)). The longest valid-UTF-8 prefix of
+  /// those bytes is appended to `buf` before the error is returned.
+  /// If the reader errored in the middle of a multi-byte UTF-8
+  /// sequence, the bytes up to — but not including — the incomplete
+  /// sequence are appended; the incomplete bytes are dropped from
+  /// `buf` but remain available in the peek buffer. This is slightly
+  /// more permissive than [`std::io::Read::read_to_string`], which
+  /// would drop the entire segment; the peek-buffer abstraction lets
+  /// us preserve more data without corrupting `String`'s UTF-8
+  /// invariant.
   ///
   /// [`peek_to_end`]: Peek::peek_to_end
   ///
@@ -760,36 +725,62 @@ where
       }
     }
 
-    let inbuf = self.buffer.len();
-
-    // Read the remaining stream into a raw byte Vec instead of calling
-    // `read_to_string` directly. `read_to_string` restores the caller
-    // String on UTF-8 failure, which hides how many bytes the reader
-    // consumed and makes it impossible to mirror them into the peek
-    // buffer. Reading raw bytes lets us preserve them unconditionally.
-    let mut raw = Vec::new();
-    let reader_result = self.reader.read_to_end(&mut raw);
-
-    // Mirror raw bytes into the peek buffer BEFORE validating UTF-8.
-    // The reader has already consumed them; they must be replayable
-    // via future peek/read calls even if the stream is invalid UTF-8.
-    if !raw.is_empty() {
-      self.buffer.extend_from_slice(&raw)?;
-    }
-
-    // On error (either I/O or InvalidData), leave `buf` unchanged.
-    // This matches std's `Read::read_to_string` contract and the
-    // old `read_to_string`-based implementation. The consumed bytes
-    // are already in the peek buffer — the caller can inspect it
-    // via `get_ref()` if partial data is needed after an error.
-    reader_result?;
-
-    match core::str::from_utf8(self.buffer.as_slice()) {
-      Ok(s) => {
-        buf.push_str(s);
-        Ok(inbuf + raw.len())
+    // Read directly into the peek buffer so the reader only advances
+    // for bytes that are simultaneously recorded for replay. Accumulate
+    // the reader outcome and validate UTF-8 at the end — on I/O error
+    // we still want to preserve the longest valid-UTF-8 prefix.
+    let loop_result: Result<()> = loop {
+      let old_len = self.buffer.len();
+      let growth = match grow_peek_buffer(&mut self.buffer) {
+        Ok(g) => g,
+        Err(e) => break Err(e),
+      };
+      match self
+        .reader
+        .read(&mut self.buffer.as_mut_slice()[old_len..old_len + growth])
+      {
+        Ok(0) => {
+          self.buffer.truncate(old_len);
+          break Ok(());
+        }
+        Ok(n) => {
+          self.buffer.truncate(old_len + n);
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {
+          self.buffer.truncate(old_len);
+          continue;
+        }
+        Err(e) => {
+          self.buffer.truncate(old_len);
+          break Err(e);
+        }
       }
-      Err(e) => Err(invalid_utf8_io_error(e)),
+    };
+
+    match (loop_result, core::str::from_utf8(self.buffer.as_slice())) {
+      (Ok(()), Ok(s)) => {
+        buf.push_str(s);
+        Ok(self.buffer.len())
+      }
+      (Ok(()), Err(e)) => Err(invalid_utf8_io_error(e)),
+      (Err(io), Ok(s)) => {
+        buf.push_str(s);
+        Err(io)
+      }
+      (Err(io), Err(utf8_err)) => {
+        // Preserve the longest valid-UTF-8 prefix: bytes before
+        // `valid_up_to()` are guaranteed to be a complete valid
+        // UTF-8 sequence. The bytes after are either invalid or an
+        // incomplete multi-byte sequence — dropped from `buf` but
+        // still available in the peek buffer via `get_ref()`.
+        let vut = utf8_err.valid_up_to();
+        if vut != 0 {
+          let s = core::str::from_utf8(&self.buffer.as_slice()[..vut])
+            .expect("valid_up_to() must point to a valid UTF-8 prefix");
+          buf.push_str(s);
+        }
+        Err(io)
+      }
     }
   }
 
@@ -879,40 +870,41 @@ where
   /// # Ok(())
   /// # }
   /// ```
-  pub fn peek_exact(&mut self, mut buf: &mut [u8]) -> Result<()> {
+  pub fn peek_exact(&mut self, buf: &mut [u8]) -> Result<()> {
     let this = self;
 
-    let buf_len = buf.len();
+    let total = buf.len();
     let peek_buf_len = this.buffer.len();
 
-    if buf_len <= peek_buf_len {
-      buf.copy_from_slice(&this.buffer.as_slice()[..buf_len]);
+    if total <= peek_buf_len {
+      buf.copy_from_slice(&this.buffer.as_slice()[..total]);
       return Ok(());
     }
 
     buf[..peek_buf_len].copy_from_slice(this.buffer.as_slice());
-    {
-      let (_read, rest) = mem::take(&mut buf).split_at_mut(peek_buf_len);
-      buf = rest;
-    }
-    let mut readed = peek_buf_len;
-    while !buf.is_empty() {
+    let mut filled = peek_buf_len;
+
+    while filled < total {
+      let old_len = this.buffer.len();
+      let want = total - filled;
+      this.buffer.resize(old_len + want)?;
+
       let n = loop {
-        match this.reader.read(buf) {
+        match this.reader.read(&mut this.buffer.as_mut_slice()[old_len..]) {
           Ok(n) => break n,
           Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-          Err(e) => return Err(e),
+          Err(e) => {
+            this.buffer.truncate(old_len);
+            return Err(e);
+          }
         }
       };
-      {
-        let (read, rest) = mem::take(&mut buf).split_at_mut(n);
-        this.buffer.extend_from_slice(read)?;
-        readed += n;
-        buf = rest;
-      }
-      if n == 0 && readed != buf_len {
+      this.buffer.truncate(old_len + n);
+      if n == 0 {
         return Err(std::io::ErrorKind::UnexpectedEof.into());
       }
+      buf[filled..filled + n].copy_from_slice(&this.buffer.as_slice()[old_len..old_len + n]);
+      filled += n;
     }
 
     Ok(())
@@ -1011,6 +1003,30 @@ impl<R: Read + ?Sized> PeekExt for R {}
 #[cfg_attr(not(tarpaulin), inline(always))]
 fn invalid_utf8_io_error(e: core::str::Utf8Error) -> std::io::Error {
   std::io::Error::new(std::io::ErrorKind::InvalidData, e)
+}
+
+/// Grow the peek buffer by up to `READ_CHUNK` bytes, halving the
+/// requested growth on each [`Buffer::resize`] failure down to 1.
+/// Returns the growth that actually succeeded, or the last error
+/// if no growth by ≥ 1 byte is possible.
+///
+/// Used by the unbounded-size `peek_to_end` / `peek_to_string` paths
+/// so they work with small-capacity fallible `Buffer` implementations
+/// when the remaining stream fits. A bounded `Buffer` whose capacity
+/// is strictly greater than the final stream size will succeed; the
+/// pathological case — capacity exactly equal to stream size — still
+/// fails, because detecting EOF requires reading one more byte.
+#[cfg_attr(not(tarpaulin), inline)]
+pub(crate) fn grow_peek_buffer<B: Buffer>(buffer: &mut B) -> std::io::Result<usize> {
+  let old_len = buffer.len();
+  let mut growth = READ_CHUNK;
+  loop {
+    match buffer.resize(old_len + growth) {
+      Ok(()) => return Ok(growth),
+      Err(_) if growth > 1 => growth /= 2,
+      Err(e) => return Err(e),
+    }
+  }
 }
 
 #[cfg(test)]

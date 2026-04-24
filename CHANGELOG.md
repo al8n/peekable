@@ -2,6 +2,35 @@
 
 ## UNRELEASED
 
+### 0.6.1
+
+#### Fixed (correctness)
+
+- **`peek_to_string` (sync / `future` / `tokio`)** — on an ordinary
+  I/O error, the caller's `String` now receives the longest
+  valid-UTF-8 prefix of the bytes consumed so far, matching
+  `std::io::Read::read_to_string`. In 0.6.0 any I/O error left the
+  caller's `String` unchanged, hiding partial text the reader had
+  already produced. When the consumed bytes are not valid UTF-8
+  (e.g. the reader errored mid multi-byte sequence) the `String`
+  is still left unchanged. Clean `InvalidData` behavior on an
+  entirely invalid stream is unaffected.
+
+- **Fallible `Buffer` implementations can no longer desync the inner
+  reader from the peek buffer.** Every peek path (sync, futures,
+  tokio × `peek` / `peek_exact` / `peek_to_end` / `peek_to_string`)
+  now grows the peek buffer first and has the reader write
+  directly into the resized tail, truncating to the actual `n` on
+  both success and error. A `Buffer` that returns `Err` from
+  `resize` / `extend_from_slice` now fails before the reader
+  advances, so replay via a later `peek` / `read` remains correct.
+
+#### Internal
+
+- Removed the fixed-size `StagingBuf` staging helper used by the
+  async futures; the peek buffer itself is now the staging area,
+  so no separate per-future allocation is needed.
+
 ### 0.6.0
 
 #### Fixed (correctness — async futures + tokio)

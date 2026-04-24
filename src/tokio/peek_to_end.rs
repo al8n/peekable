@@ -10,7 +10,7 @@ use std::{
 };
 
 use super::{AsyncPeekable, Buffer, DefaultBuffer};
-use crate::StagingBuf;
+use crate::grow_peek_buffer;
 
 pin_project! {
   /// Peek to end
@@ -19,9 +19,7 @@ pin_project! {
   pub struct PeekToEnd<'a, R, B = DefaultBuffer> {
     peekable: &'a mut AsyncPeekable<R, B>,
     buf: &'a mut Vec<u8>,
-    initial_peek_len: usize,
-    reader_data_start: Option<usize>,
-    staging: StagingBuf,
+    prefix_copied: bool,
     #[pin]
     _pin: PhantomPinned,
   }
@@ -35,13 +33,10 @@ where
   R: AsyncRead + Unpin,
   B: Buffer,
 {
-  let initial_peek_len = peekable.buffer.len();
   PeekToEnd {
     peekable,
     buf: buffer,
-    initial_peek_len,
-    reader_data_start: None,
-    staging: crate::new_staging_buf(),
+    prefix_copied: false,
     _pin: PhantomPinned,
   }
 }
@@ -55,42 +50,43 @@ where
 
   fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
     let me = self.project();
-    let inbuf = *me.initial_peek_len;
 
-    let reader_start = match *me.reader_data_start {
-      Some(pos) => pos,
-      None => {
-        me.buf.extend_from_slice(me.peekable.buffer.as_slice());
-        let pos = me.buf.len();
-        *me.reader_data_start = Some(pos);
-        pos
-      }
-    };
+    if !*me.prefix_copied {
+      me.buf.extend_from_slice(me.peekable.buffer.as_slice());
+      *me.prefix_copied = true;
+    }
 
     loop {
-      let mut read_buf = tokio::io::ReadBuf::new(me.staging);
-      match Pin::new(&mut me.peekable.reader).poll_read(cx, &mut read_buf) {
+      let old_len = me.peekable.buffer.len();
+      let growth = grow_peek_buffer(&mut me.peekable.buffer)?;
+      let mut tail =
+        tokio::io::ReadBuf::new(&mut me.peekable.buffer.as_mut_slice()[old_len..old_len + growth]);
+      match Pin::new(&mut me.peekable.reader).poll_read(cx, &mut tail) {
         Poll::Ready(Ok(())) => {
-          let filled = read_buf.filled();
-          let n = filled.len();
+          let n = tail.filled().len();
           if n == 0 {
-            return Poll::Ready(Ok(inbuf + (me.buf.len() - reader_start)));
+            me.peekable.buffer.truncate(old_len);
+            return Poll::Ready(Ok(me.peekable.buffer.len()));
           }
-          // TODO(al8n): if extend_from_slice fails, the peek buffer
-          // won't have these bytes — see future/peek_to_end.rs.
-          // At least give the caller the data in buf (matching
-          // read_to_end's partial-data-on-error contract).
-          if let Err(e) = me.peekable.buffer.extend_from_slice(filled) {
-            me.buf.extend_from_slice(filled);
-            return Poll::Ready(Err(e));
-          }
-          me.buf.extend_from_slice(filled);
+          me.peekable.buffer.truncate(old_len + n);
+          me.buf
+            .extend_from_slice(&me.peekable.buffer.as_slice()[old_len..old_len + n]);
         }
-        Poll::Ready(Err(e)) if e.kind() == io::ErrorKind::Interrupted => continue,
-        // Leave partial data in buf — matches std/tokio's
-        // read_to_end contract.
-        Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
-        Poll::Pending => return Poll::Pending,
+        Poll::Ready(Err(e)) if e.kind() == io::ErrorKind::Interrupted => {
+          me.peekable.buffer.truncate(old_len);
+          continue;
+        }
+        Poll::Ready(Err(e)) => {
+          // Partial data already mirrored into both the peek buffer
+          // (prior iterations) and `buf`. Leaving it in `buf` matches
+          // std/tokio's read_to_end contract.
+          me.peekable.buffer.truncate(old_len);
+          return Poll::Ready(Err(e));
+        }
+        Poll::Pending => {
+          me.peekable.buffer.truncate(old_len);
+          return Poll::Pending;
+        }
       }
     }
   }

@@ -176,31 +176,36 @@ where
 
     let this = self.project();
     if buffer_len > 0 {
-      return match want_read.cmp(&buffer_len) {
-        cmp::Ordering::Less => {
-          buf.copy_from_slice(&this.buffer.as_slice()[..want_read]);
-          this.buffer.consume(..want_read);
-          return Poll::Ready(Ok(want_read));
-        }
-        cmp::Ordering::Equal => {
-          buf.copy_from_slice(this.buffer.as_slice());
+      if want_read < buffer_len {
+        buf.copy_from_slice(&this.buffer.as_slice()[..want_read]);
+        this.buffer.consume(..want_read);
+        return Poll::Ready(Ok(want_read));
+      } else if want_read == buffer_len {
+        buf.copy_from_slice(this.buffer.as_slice());
+        this.buffer.clear();
+        return Poll::Ready(Ok(want_read));
+      }
+      buf[..buffer_len].copy_from_slice(this.buffer.as_slice());
+      buf = &mut buf[buffer_len..];
+      return match this.reader.poll_read(cx, buf) {
+        Poll::Ready(Ok(bytes)) => {
           this.buffer.clear();
-          return Poll::Ready(Ok(want_read));
+          Poll::Ready(Ok(bytes + buffer_len))
         }
-        cmp::Ordering::Greater => {
-          buf[..buffer_len].copy_from_slice(this.buffer.as_slice());
-          buf = &mut buf[buffer_len..];
-          match this.reader.poll_read(cx, buf) {
-            Poll::Ready(Ok(bytes)) => {
-              this.buffer.clear();
-              Poll::Ready(Ok(bytes + buffer_len))
-            }
-            Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
-            Poll::Pending => {
-              this.buffer.clear();
-              Poll::Ready(Ok(buffer_len))
-            }
-          }
+        Poll::Ready(Err(_)) => {
+          // Inner errored after we'd already copied `buffer_len`
+          // bytes from the peek buffer into the caller's slice.
+          // `AsyncRead` / `Read` contracts forbid returning Err after
+          // writing bytes, so surface the partial success; the peek
+          // buffer is cleared and the caller's next poll_read will
+          // delegate to the inner reader, which will surface the
+          // persistent error on the next call.
+          this.buffer.clear();
+          Poll::Ready(Ok(buffer_len))
+        }
+        Poll::Pending => {
+          this.buffer.clear();
+          Poll::Ready(Ok(buffer_len))
         }
       };
     }
@@ -241,51 +246,85 @@ where
     let buffer_len = self.buffer.len();
 
     if buffer_len > 0 {
-      return match want_peek.cmp(&buffer_len) {
-        cmp::Ordering::Less => {
-          buf.copy_from_slice(&self.buffer.as_slice()[..want_peek]);
-          Poll::Ready(Ok(want_peek))
-        }
-        cmp::Ordering::Equal => {
-          buf.copy_from_slice(self.buffer.as_slice());
-          Poll::Ready(Ok(want_peek))
-        }
-        cmp::Ordering::Greater => {
-          let this = self.project();
-          this.buffer.resize(want_peek)?;
-          match this
-            .reader
-            .poll_read(cx, &mut this.buffer.as_mut_slice()[buffer_len..])
-          {
-            Poll::Ready(Ok(n)) => {
-              this.buffer.truncate(n + buffer_len);
-              buf[..buffer_len + n].copy_from_slice(this.buffer.as_slice());
-              Poll::Ready(Ok(buffer_len + n))
-            }
-            Poll::Ready(Err(e)) => {
-              // Roll back the resize so the peek buffer doesn't carry
-              // ghost zero-bytes past the originally peeked data.
-              this.buffer.truncate(buffer_len);
-              Poll::Ready(Err(e))
-            }
-            Poll::Pending => {
-              this.buffer.truncate(buffer_len);
-              buf[..buffer_len].copy_from_slice(this.buffer.as_slice());
-              Poll::Ready(Ok(buffer_len))
-            }
+      if want_peek < buffer_len {
+        buf.copy_from_slice(&self.buffer.as_slice()[..want_peek]);
+        return Poll::Ready(Ok(want_peek));
+      } else if want_peek == buffer_len {
+        buf.copy_from_slice(self.buffer.as_slice());
+        return Poll::Ready(Ok(want_peek));
+      }
+      let mut this = self.project();
+      this.buffer.resize(want_peek)?;
+      // Retry on `Interrupted` and convert `WouldBlock` to `Pending`
+      // per the `AsyncPeek` trait contract.
+      loop {
+        match this
+          .reader
+          .as_mut()
+          .poll_read(cx, &mut this.buffer.as_mut_slice()[buffer_len..])
+        {
+          Poll::Ready(Ok(n)) => {
+            this.buffer.truncate(n + buffer_len);
+            buf[..buffer_len + n].copy_from_slice(this.buffer.as_slice());
+            return Poll::Ready(Ok(buffer_len + n));
+          }
+          Poll::Ready(Err(e)) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+          Poll::Ready(Err(e)) if e.kind() == std::io::ErrorKind::WouldBlock => {
+            this.buffer.truncate(buffer_len);
+            buf[..buffer_len].copy_from_slice(this.buffer.as_slice());
+            return Poll::Ready(Ok(buffer_len));
+          }
+          Poll::Ready(Err(e)) => {
+            // Roll back the resize so the peek buffer doesn't carry
+            // ghost zero-bytes past the originally peeked data.
+            this.buffer.truncate(buffer_len);
+            return Poll::Ready(Err(e));
+          }
+          Poll::Pending => {
+            this.buffer.truncate(buffer_len);
+            buf[..buffer_len].copy_from_slice(this.buffer.as_slice());
+            return Poll::Ready(Ok(buffer_len));
           }
         }
-      };
+      }
     }
 
-    let this = self.project();
-    match this.reader.poll_read(cx, buf) {
-      Poll::Ready(Ok(bytes)) => {
-        this.buffer.extend_from_slice(&buf[..bytes])?;
-        Poll::Ready(Ok(bytes))
+    if want_peek == 0 {
+      return Poll::Ready(Ok(0));
+    }
+
+    // Read directly into the peek buffer's tail so the reader only
+    // advances for bytes already recorded for replay.
+    let mut this = self.project();
+    let old_len = this.buffer.len();
+    this.buffer.resize(old_len + want_peek)?;
+    // Retry on `Interrupted` and convert `WouldBlock` to `Pending`
+    // per the `AsyncPeek` trait contract.
+    loop {
+      match this
+        .reader
+        .as_mut()
+        .poll_read(cx, &mut this.buffer.as_mut_slice()[old_len..])
+      {
+        Poll::Ready(Ok(n)) => {
+          this.buffer.truncate(old_len + n);
+          buf[..n].copy_from_slice(&this.buffer.as_slice()[old_len..old_len + n]);
+          return Poll::Ready(Ok(n));
+        }
+        Poll::Ready(Err(e)) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+        Poll::Ready(Err(e)) if e.kind() == std::io::ErrorKind::WouldBlock => {
+          this.buffer.truncate(old_len);
+          return Poll::Pending;
+        }
+        Poll::Ready(Err(e)) => {
+          this.buffer.truncate(old_len);
+          return Poll::Ready(Err(e));
+        }
+        Poll::Pending => {
+          this.buffer.truncate(old_len);
+          return Poll::Pending;
+        }
       }
-      Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
-      Poll::Pending => Poll::Pending,
     }
   }
 }

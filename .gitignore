@@ -16,3 +16,8 @@
 
 /target
 Cargo.lock
+
+# Tarpaulin coverage output
+cobertura.xml
+tarpaulin-report.html
+lcov.info
