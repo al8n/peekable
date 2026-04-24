@@ -66,27 +66,38 @@ where
       }
     }
 
-    // Read from the inner reader into the unfilled portion.
+    // Read from the inner reader directly into the peek buffer's tail
+    // so the reader only advances for bytes recorded for replay.
     while *me.filled < total {
-      let mut read_buf = tokio::io::ReadBuf::new(&mut me.buf[*me.filled..]);
-      match Pin::new(&mut me.peekable.reader).poll_read(cx, &mut read_buf) {
+      let old_len = me.peekable.buffer.len();
+      let want = total - *me.filled;
+      me.peekable.buffer.resize(old_len + want)?;
+
+      let mut tail = tokio::io::ReadBuf::new(&mut me.peekable.buffer.as_mut_slice()[old_len..]);
+      match Pin::new(&mut me.peekable.reader).poll_read(cx, &mut tail) {
         Poll::Ready(Ok(())) => {}
-        Poll::Ready(Err(e)) if e.kind() == io::ErrorKind::Interrupted => continue,
-        Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
-        Poll::Pending => return Poll::Pending,
+        Poll::Ready(Err(e)) if e.kind() == io::ErrorKind::Interrupted => {
+          me.peekable.buffer.truncate(old_len);
+          continue;
+        }
+        Poll::Ready(Err(e)) => {
+          me.peekable.buffer.truncate(old_len);
+          return Poll::Ready(Err(e));
+        }
+        Poll::Pending => {
+          me.peekable.buffer.truncate(old_len);
+          return Poll::Pending;
+        }
       }
-      let n = read_buf.filled().len();
+      let n = tail.filled().len();
+      me.peekable.buffer.truncate(old_len + n);
 
       if n == 0 {
         return Poll::Ready(Err(eof()));
       }
 
-      // TODO(al8n): same fallible-Buffer concern as peek_to_end/
-      // peek_to_string — if extend_from_slice fails, the bytes are
-      // in the caller's buf but not mirrored to the peek buffer.
-      me.peekable
-        .buffer
-        .extend_from_slice(&me.buf[*me.filled..*me.filled + n])?;
+      me.buf[*me.filled..*me.filled + n]
+        .copy_from_slice(&me.peekable.buffer.as_slice()[old_len..old_len + n]);
       *me.filled += n;
     }
 

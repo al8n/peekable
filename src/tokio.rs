@@ -225,54 +225,47 @@ impl<R: AsyncRead, B: Buffer> AsyncPeek for AsyncPeekable<R, B> {
   ) -> Poll<io::Result<()>> {
     let this = self.project();
     let buffer_len = this.buffer.len();
+    let available = buf.remaining();
 
-    // Check if the buffer has enough data to fill `buf`
-    if buffer_len > 0 {
-      let available = buf.remaining();
-      if available > buffer_len {
-        // Not enough data in the buffer; try to peek more from the inner
-        // reader. Track `orig_filled` so we can roll back on error.
-        let orig_filled = buf.filled().len();
-        buf.put_slice(this.buffer.as_slice());
-        let cur = buf.filled().len();
-        match this.reader.poll_read(cx, buf) {
-          Poll::Ready(Ok(())) => {
-            let filled = buf.filled();
-            let read = filled.len() - cur;
-            this.buffer.extend_from_slice(&filled[cur..cur + read])?;
-            Poll::Ready(Ok(()))
-          }
-          Poll::Ready(Err(e)) => {
-            // Roll back the put_slice so the caller's buf is unchanged.
-            buf.set_filled(orig_filled);
-            Poll::Ready(Err(e))
-          }
-          Poll::Pending => {
-            // The inner reader has no more data right now, but we have
-            // already placed `buffer_len` bytes from the peek buffer
-            // into `buf`. Return a partial peek as `Ready(Ok(()))` —
-            // the data is still in `this.buffer` so subsequent peeks
-            // see it again. (Do NOT put_slice a second time.)
-            Poll::Ready(Ok(()))
-          }
-        }
-      } else {
-        // Enough data in the buffer, copy it to `buf`
-        buf.put_slice(&this.buffer.as_slice()[..available]);
+    if available == 0 {
+      return Poll::Ready(Ok(()));
+    }
+
+    // Fast path: the existing peek buffer already covers the request.
+    if buffer_len >= available {
+      buf.put_slice(&this.buffer.as_slice()[..available]);
+      return Poll::Ready(Ok(()));
+    }
+
+    // Top up from the reader. Read directly into the peek buffer's
+    // tail via a ReadBuf so the reader only advances for bytes we
+    // simultaneously record for replay.
+    let want = available - buffer_len;
+    let old_len = buffer_len;
+    this.buffer.resize(old_len + want)?;
+    let mut tail = ReadBuf::new(&mut this.buffer.as_mut_slice()[old_len..]);
+    match this.reader.poll_read(cx, &mut tail) {
+      Poll::Ready(Ok(())) => {
+        let n = tail.filled().len();
+        this.buffer.truncate(old_len + n);
+        // Copy existing prefix + newly-read bytes to caller's buf.
+        buf.put_slice(&this.buffer.as_slice()[..old_len + n]);
         Poll::Ready(Ok(()))
       }
-    } else {
-      // No data in the buffer, try to peek directly into `buf`
-      let cur = buf.filled().len();
-      match this.reader.poll_read(cx, buf) {
-        Poll::Ready(Ok(())) => {
-          let filled = buf.filled();
-          let read = filled.len() - cur;
-          this.buffer.extend_from_slice(&filled[cur..cur + read])?;
+      Poll::Ready(Err(e)) => {
+        this.buffer.truncate(old_len);
+        Poll::Ready(Err(e))
+      }
+      Poll::Pending => {
+        this.buffer.truncate(old_len);
+        if buffer_len > 0 {
+          // Hand the caller the prefix we already have — the data
+          // is still in this.buffer so later peeks see it again.
+          buf.put_slice(this.buffer.as_slice());
           Poll::Ready(Ok(()))
+        } else {
+          Poll::Pending
         }
-        Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
-        Poll::Pending => Poll::Pending,
       }
     }
   }

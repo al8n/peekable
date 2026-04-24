@@ -687,7 +687,10 @@ impl<const CAP: usize> Buffer for BoundedBuffer<CAP> {
   }
   fn resize(&mut self, len: usize) -> io::Result<()> {
     if len > CAP {
-      return Err(io::Error::new(io::ErrorKind::OutOfMemory, "BoundedBuffer cap"));
+      return Err(io::Error::new(
+        io::ErrorKind::OutOfMemory,
+        "BoundedBuffer cap",
+      ));
     }
     self.inner.resize(len, 0);
     Ok(())
@@ -697,7 +700,10 @@ impl<const CAP: usize> Buffer for BoundedBuffer<CAP> {
   }
   fn extend_from_slice(&mut self, other: &[u8]) -> io::Result<()> {
     if self.inner.len() + other.len() > CAP {
-      return Err(io::Error::new(io::ErrorKind::OutOfMemory, "BoundedBuffer cap"));
+      return Err(io::Error::new(
+        io::ErrorKind::OutOfMemory,
+        "BoundedBuffer cap",
+      ));
     }
     self.inner.extend_from_slice(other);
     Ok(())

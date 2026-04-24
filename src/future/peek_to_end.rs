@@ -42,9 +42,7 @@ where
     let this = &mut *self;
 
     if !this.prefix_copied {
-      this
-        .buf
-        .extend_from_slice(this.peekable.buffer.as_slice());
+      this.buf.extend_from_slice(this.peekable.buffer.as_slice());
       this.prefix_copied = true;
     }
 

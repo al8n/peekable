@@ -60,39 +60,41 @@ where
     // longest valid prefix on an I/O error (matching std semantics).
     loop {
       let old_len = this.peekable.buffer.len();
-      let loop_result: io::Result<()> = if let Err(e) =
-        this.peekable.buffer.resize(old_len + READ_CHUNK)
-      {
-        Err(e)
-      } else {
-        match Pin::new(&mut this.peekable.reader)
-          .poll_read(cx, &mut this.peekable.buffer.as_mut_slice()[old_len..])
-        {
-          Poll::Ready(Ok(0)) => {
-            this.peekable.buffer.truncate(old_len);
-            Ok(())
+      let loop_result: io::Result<()> =
+        if let Err(e) = this.peekable.buffer.resize(old_len + READ_CHUNK) {
+          Err(e)
+        } else {
+          match Pin::new(&mut this.peekable.reader)
+            .poll_read(cx, &mut this.peekable.buffer.as_mut_slice()[old_len..])
+          {
+            Poll::Ready(Ok(0)) => {
+              this.peekable.buffer.truncate(old_len);
+              Ok(())
+            }
+            Poll::Ready(Ok(n)) => {
+              this.peekable.buffer.truncate(old_len + n);
+              continue;
+            }
+            Poll::Ready(Err(e)) if e.kind() == io::ErrorKind::Interrupted => {
+              this.peekable.buffer.truncate(old_len);
+              continue;
+            }
+            Poll::Ready(Err(e)) => {
+              this.peekable.buffer.truncate(old_len);
+              Err(e)
+            }
+            Poll::Pending => {
+              this.peekable.buffer.truncate(old_len);
+              return Poll::Pending;
+            }
           }
-          Poll::Ready(Ok(n)) => {
-            this.peekable.buffer.truncate(old_len + n);
-            continue;
-          }
-          Poll::Ready(Err(e)) if e.kind() == io::ErrorKind::Interrupted => {
-            this.peekable.buffer.truncate(old_len);
-            continue;
-          }
-          Poll::Ready(Err(e)) => {
-            this.peekable.buffer.truncate(old_len);
-            Err(e)
-          }
-          Poll::Pending => {
-            this.peekable.buffer.truncate(old_len);
-            return Poll::Pending;
-          }
-        }
-      };
+        };
 
       return Poll::Ready(
-        match (loop_result, core::str::from_utf8(this.peekable.buffer.as_slice())) {
+        match (
+          loop_result,
+          core::str::from_utf8(this.peekable.buffer.as_slice()),
+        ) {
           (Ok(()), Ok(s)) => {
             this.buf.push_str(s);
             Ok(this.peekable.buffer.len())

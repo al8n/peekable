@@ -19,79 +19,10 @@ pub type DefaultBuffer = smallvec::SmallVec<[u8; 64]>;
 pub type DefaultBuffer = Vec<u8>;
 
 /// Chunk size used by `peek_to_end` / `peek_to_string` for growing
-/// the peek buffer in unbounded read loops, and as the fixed staging
-/// buffer size for async `poll_read` when the `tokio`/`future` feature
-/// is enabled.
+/// the peek buffer in unbounded read loops. Applies to both sync and
+/// async implementations — the peek buffer itself is now the staging
+/// area, so no separate fixed-size staging buffer is needed.
 const READ_CHUNK: usize = 1024;
-
-#[cfg(any(feature = "tokio", feature = "future"))]
-const STAGING_CAP: usize = READ_CHUNK;
-
-/// A fixed-capacity byte buffer for `poll_read` staging in the async
-/// peek futures. Stored as a field in the future struct rather than a
-/// stack-local array, so `poll()` adds zero stack pressure — important
-/// for executors with small per-task stacks.
-///
-/// When the `smallvec` feature is enabled, this is
-/// `SmallVec<[u8; 1024]>` — the bytes live inline in the future struct.
-/// In this crate it is used as a fixed-size 1024-byte staging buffer.
-///
-/// Without `smallvec`, a minimal inline wrapper provides the same
-/// fixed 1024-byte semantics with no heap allocation of its own.
-#[cfg(all(feature = "smallvec", any(feature = "tokio", feature = "future")))]
-pub(crate) type StagingBuf = smallvec::SmallVec<[u8; STAGING_CAP]>;
-
-#[cfg(all(not(feature = "smallvec"), any(feature = "tokio", feature = "future")))]
-pub(crate) struct StagingBuf {
-  buf: [u8; STAGING_CAP],
-}
-
-#[cfg(all(not(feature = "smallvec"), any(feature = "tokio", feature = "future")))]
-impl StagingBuf {
-  /// Creates a new zeroed staging buffer.
-  pub(crate) fn new() -> Self {
-    Self {
-      buf: [0u8; STAGING_CAP],
-    }
-  }
-}
-
-#[cfg(all(not(feature = "smallvec"), any(feature = "tokio", feature = "future")))]
-impl core::ops::Deref for StagingBuf {
-  type Target = [u8];
-  fn deref(&self) -> &[u8] {
-    &self.buf
-  }
-}
-
-#[cfg(all(not(feature = "smallvec"), any(feature = "tokio", feature = "future")))]
-impl core::ops::DerefMut for StagingBuf {
-  fn deref_mut(&mut self) -> &mut [u8] {
-    &mut self.buf
-  }
-}
-
-#[cfg(all(not(feature = "smallvec"), any(feature = "tokio", feature = "future")))]
-impl core::fmt::Debug for StagingBuf {
-  fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-    f.debug_struct("StagingBuf")
-      .field("cap", &STAGING_CAP)
-      .finish()
-  }
-}
-
-/// Construct a new [`StagingBuf`].
-#[cfg(any(feature = "tokio", feature = "future"))]
-pub(crate) fn new_staging_buf() -> StagingBuf {
-  #[cfg(feature = "smallvec")]
-  {
-    smallvec::smallvec![0u8; STAGING_CAP]
-  }
-  #[cfg(not(feature = "smallvec"))]
-  {
-    StagingBuf::new()
-  }
-}
 
 /// Extracts the successful type of a `Poll<T>`.
 ///
