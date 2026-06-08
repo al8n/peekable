@@ -200,7 +200,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
       - name: Upload to codecov.io
-        uses: codecov/codecov-action@v6
+        uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           slug: ${{ github.repository }}
