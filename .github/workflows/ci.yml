@@ -74,7 +74,7 @@ jobs:
       # --no-self-update is necessary because the windows environment cannot self-update rustup.exe.
       run: rustup update stable --no-self-update && rustup default stable && rustup component add clippy
     - name: Install cargo-hack
-      uses: taiki-e/install-action@v2
+      uses: taiki-e/install-action@v2.85.2
       with:
         tool: cargo-hack
     - name: Apply clippy lints
@@ -105,7 +105,7 @@ jobs:
       # --no-self-update is necessary because the windows environment cannot self-update rustup.exe.
       run: rustup update stable --no-self-update && rustup default stable
     - name: Install cargo-hack
-      uses: taiki-e/install-action@v2
+      uses: taiki-e/install-action@v2.85.2
       with:
         tool: cargo-hack
     - name: Run build
@@ -136,7 +136,7 @@ jobs:
       # --no-self-update is necessary because the windows environment cannot self-update rustup.exe.
       run: rustup update stable --no-self-update && rustup default stable
     - name: Install cargo-hack
-      uses: taiki-e/install-action@v2
+      uses: taiki-e/install-action@v2.85.2
       with:
         tool: cargo-hack
     - name: Run test
@@ -160,7 +160,7 @@ jobs:
         # set of lines. Different tarpaulin versions can produce different
         # totals (especially around macro-expanded code), which caused
         # codecov numbers to drift from local runs.
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@v2.85.2
         with:
           tool: cargo-tarpaulin@0.35.2
       - name: Cache cargo registry
