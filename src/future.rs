@@ -5,7 +5,7 @@ use std::{
   task::{Context, Poll},
 };
 
-use futures_util::{AsyncRead, AsyncWrite};
+use futures_util::{AsyncBufRead, AsyncRead, AsyncWrite};
 
 use super::*;
 
@@ -211,6 +211,31 @@ where
     }
 
     this.reader.poll_read(cx, buf)
+  }
+}
+
+impl<R: AsyncBufRead, B: Buffer> AsyncBufRead for AsyncPeekable<R, B> {
+  fn poll_fill_buf(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<&[u8]>> {
+    let this = self.project();
+    let buffer_len = this.buffer.len();
+    if buffer_len > 0 {
+      // yield internal buffer if its not empty
+      Poll::Ready(Ok(this.buffer.as_slice()))
+    } else {
+      // otherwise forward to inner AsyncBufRead instance
+      this.reader.poll_fill_buf(cx)
+    }
+  }
+
+  fn consume(self: Pin<&mut Self>, mut amt: usize) {
+    let this = self.project();
+    let buffer_len = this.buffer.len();
+    if buffer_len > 0 {
+      let available = amt.min(buffer_len);
+      this.buffer.consume(..available);
+      amt -= available;
+    }
+    this.reader.consume(amt)
   }
 }
 

@@ -5,7 +5,7 @@
 
 use buffer::Buffer;
 use std::{
-  io::{IoSliceMut, Read, Result, Write},
+  io::{BufRead, IoSliceMut, Read, Result, Write},
   mem,
 };
 
@@ -110,6 +110,29 @@ where
     }
 
     this.reader.read(buf)
+  }
+}
+
+impl<R: BufRead, B: Buffer> BufRead for Peekable<R, B> {
+  fn fill_buf(&mut self) -> Result<&[u8]> {
+    let buffer_len = self.buffer.len();
+    if buffer_len > 0 {
+      // yield internal buffer if its not empty
+      Ok(self.buffer.as_slice())
+    } else {
+      // otherwise forward to inner AsyncBufRead instance
+      self.reader.fill_buf()
+    }
+  }
+
+  fn consume(&mut self, mut amt: usize) {
+    let buffer_len = self.buffer.len();
+    if buffer_len > 0 {
+      let available = amt.min(buffer_len);
+      self.buffer.consume(..available);
+      amt -= available;
+    }
+    self.reader.consume(amt)
   }
 }
 
