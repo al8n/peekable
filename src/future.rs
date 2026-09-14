@@ -86,7 +86,7 @@ pub trait AsyncPeek: AsyncRead {
 
 macro_rules! deref_async_peek {
   () => {
-    #[cfg_attr(not(tarpaulin), inline(always))]
+    #[cfg_attr(not(coverage), inline(always))]
     fn poll_peek(
       mut self: Pin<&mut Self>,
       cx: &mut Context<'_>,
@@ -95,7 +95,7 @@ macro_rules! deref_async_peek {
       Pin::new(&mut **self).poll_peek(cx, buf)
     }
 
-    #[cfg_attr(not(tarpaulin), inline(always))]
+    #[cfg_attr(not(coverage), inline(always))]
     fn poll_peek_vectored(
       mut self: Pin<&mut Self>,
       cx: &mut Context<'_>,
@@ -119,12 +119,12 @@ where
   P: DerefMut + Unpin,
   P::Target: AsyncPeek,
 {
-  #[cfg_attr(not(tarpaulin), inline(always))]
+  #[cfg_attr(not(coverage), inline(always))]
   fn poll_peek(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut [u8]) -> Poll<Result<usize>> {
     self.get_mut().as_mut().poll_peek(cx, buf)
   }
 
-  #[cfg_attr(not(tarpaulin), inline(always))]
+  #[cfg_attr(not(coverage), inline(always))]
   fn poll_peek_vectored(
     self: Pin<&mut Self>,
     cx: &mut Context<'_>,
@@ -146,14 +146,14 @@ pin_project_lite::pin_project! {
 }
 
 impl<R> From<R> for AsyncPeekable<R> {
-  #[cfg_attr(not(tarpaulin), inline(always))]
+  #[cfg_attr(not(coverage), inline(always))]
   fn from(reader: R) -> Self {
     Self::new(reader)
   }
 }
 
 impl<R> From<(usize, R)> for AsyncPeekable<R> {
-  #[cfg_attr(not(tarpaulin), inline(always))]
+  #[cfg_attr(not(coverage), inline(always))]
   fn from((cap, reader): (usize, R)) -> Self {
     Self::with_capacity(reader, cap)
   }
@@ -218,17 +218,17 @@ impl<W, B> AsyncWrite for AsyncPeekable<W, B>
 where
   W: AsyncWrite,
 {
-  #[cfg_attr(not(tarpaulin), inline(always))]
+  #[cfg_attr(not(coverage), inline(always))]
   fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<()>> {
     self.project().reader.poll_close(cx)
   }
 
-  #[cfg_attr(not(tarpaulin), inline(always))]
+  #[cfg_attr(not(coverage), inline(always))]
   fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<()>> {
     self.project().reader.poll_flush(cx)
   }
 
-  #[cfg_attr(not(tarpaulin), inline(always))]
+  #[cfg_attr(not(coverage), inline(always))]
   fn poll_write(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<Result<usize>> {
     self.project().reader.poll_write(cx, buf)
   }
@@ -344,7 +344,7 @@ impl<R> AsyncPeekable<R> {
   /// let peekable = AsyncPeekable::new(reader);
   /// # });
   /// ```
-  #[cfg_attr(not(tarpaulin), inline(always))]
+  #[cfg_attr(not(coverage), inline(always))]
   pub fn new(reader: R) -> Self {
     Self::construct(reader, DefaultBuffer::new(), None)
   }
@@ -362,7 +362,7 @@ impl<R> AsyncPeekable<R> {
   /// let peekable = AsyncPeekable::with_capacity(reader, 1024);
   /// # });
   /// ```
-  #[cfg_attr(not(tarpaulin), inline(always))]
+  #[cfg_attr(not(coverage), inline(always))]
   pub fn with_capacity(reader: R, capacity: usize) -> Self {
     Self::construct(
       reader,
@@ -388,7 +388,7 @@ impl<R, B> AsyncPeekable<R, B> {
   /// let peekable: AsyncPeekable<_, Vec<u8>> = AsyncPeekable::with_buffer(reader);
   /// # });
   /// ```
-  #[cfg_attr(not(tarpaulin), inline(always))]
+  #[cfg_attr(not(coverage), inline(always))]
   pub fn with_buffer(reader: R) -> Self
   where
     B: Buffer,
@@ -410,7 +410,7 @@ impl<R, B> AsyncPeekable<R, B> {
   /// let peekable: AsyncPeekable<_, Vec<u8>> = AsyncPeekable::with_capacity_and_buffer(reader, 1024);
   /// # });
   /// ```
-  #[cfg_attr(not(tarpaulin), inline(always))]
+  #[cfg_attr(not(coverage), inline(always))]
   pub fn with_capacity_and_buffer(reader: R, capacity: usize) -> Self
   where
     B: Buffer,
@@ -418,7 +418,7 @@ impl<R, B> AsyncPeekable<R, B> {
     Self::construct(reader, B::with_capacity(capacity), Some(capacity))
   }
 
-  #[cfg_attr(not(tarpaulin), inline(always))]
+  #[cfg_attr(not(coverage), inline(always))]
   fn construct(reader: R, buffer: B, buf_cap: Option<usize>) -> Self {
     Self {
       reader,
@@ -452,7 +452,7 @@ impl<R, B> AsyncPeekable<R, B> {
   /// assert_eq!(output, [3, 4]);
   /// # });
   /// ```
-  #[cfg_attr(not(tarpaulin), inline(always))]
+  #[cfg_attr(not(coverage), inline(always))]
   pub fn consume(&mut self) -> B
   where
     B: Buffer,
@@ -488,7 +488,7 @@ impl<R, B> AsyncPeekable<R, B> {
   /// assert_eq!(output, [3, 4]);
   /// # });
   /// ```
-  #[cfg_attr(not(tarpaulin), inline(always))]
+  #[cfg_attr(not(coverage), inline(always))]
   pub fn consume_in_place(&mut self)
   where
     B: Buffer,
@@ -518,7 +518,7 @@ impl<R, B> AsyncPeekable<R, B> {
   /// assert_eq!(buffer, [1, 2].as_slice());
   /// # });
   /// ```
-  #[cfg_attr(not(tarpaulin), inline(always))]
+  #[cfg_attr(not(coverage), inline(always))]
   pub fn get_mut(&mut self) -> (&[u8], &mut R)
   where
     B: Buffer,
@@ -548,7 +548,7 @@ impl<R, B> AsyncPeekable<R, B> {
   /// assert_eq!(buffer, [1, 2].as_slice());
   /// # });
   /// ```
-  #[cfg_attr(not(tarpaulin), inline(always))]
+  #[cfg_attr(not(coverage), inline(always))]
   pub fn get_ref(&self) -> (&[u8], &R)
   where
     B: Buffer,
@@ -576,7 +576,7 @@ impl<R, B> AsyncPeekable<R, B> {
   /// assert_eq!(buffer.as_slice(), [1, 2].as_slice());
   /// # });
   /// ```
-  #[cfg_attr(not(tarpaulin), inline(always))]
+  #[cfg_attr(not(coverage), inline(always))]
   pub fn into_components(self) -> (B, R) {
     (self.buffer, self.reader)
   }

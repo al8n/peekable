@@ -118,26 +118,26 @@ where
   W: Write,
   B: Buffer,
 {
-  #[cfg_attr(not(tarpaulin), inline(always))]
+  #[cfg_attr(not(coverage), inline(always))]
   fn write(&mut self, buf: &[u8]) -> Result<usize> {
     self.reader.write(buf)
   }
 
-  #[cfg_attr(not(tarpaulin), inline(always))]
+  #[cfg_attr(not(coverage), inline(always))]
   fn flush(&mut self) -> Result<()> {
     self.reader.flush()
   }
 }
 
 impl<R> From<R> for Peekable<R> {
-  #[cfg_attr(not(tarpaulin), inline(always))]
+  #[cfg_attr(not(coverage), inline(always))]
   fn from(reader: R) -> Self {
     Peekable::new(reader)
   }
 }
 
 impl<R> From<(usize, R)> for Peekable<R> {
-  #[cfg_attr(not(tarpaulin), inline(always))]
+  #[cfg_attr(not(coverage), inline(always))]
   fn from((cap, reader): (usize, R)) -> Self {
     Peekable::with_capacity(reader, cap)
   }
@@ -153,7 +153,7 @@ impl<R> Peekable<R> {
   ///
   /// let peekable = peekable::Peekable::new(Cursor::new([1, 2, 3, 4]));
   /// ```
-  #[cfg_attr(not(tarpaulin), inline(always))]
+  #[cfg_attr(not(coverage), inline(always))]
   pub fn new(reader: R) -> Self {
     Self::construct(reader, DefaultBuffer::new(), None)
   }
@@ -168,7 +168,7 @@ impl<R> Peekable<R> {
   ///
   /// let peekable = peekable::Peekable::with_capacity(Cursor::new([0; 1024]), 1024);
   /// ```
-  #[cfg_attr(not(tarpaulin), inline(always))]
+  #[cfg_attr(not(coverage), inline(always))]
   pub fn with_capacity(reader: R, capacity: usize) -> Self {
     Self::construct(
       reader,
@@ -190,7 +190,7 @@ impl<R, B> Peekable<R, B> {
   ///
   /// let peekable: Peekable<_, Vec<u8>> = Peekable::with_buffer(Cursor::new([1, 2, 3, 4]));
   /// ```
-  #[cfg_attr(not(tarpaulin), inline(always))]
+  #[cfg_attr(not(coverage), inline(always))]
   pub fn with_buffer(reader: R) -> Self
   where
     B: Buffer,
@@ -209,7 +209,7 @@ impl<R, B> Peekable<R, B> {
   ///
   /// let peekable: Peekable<_, Vec<u8>>  = Peekable::with_capacity_and_buffer(Cursor::new([0; 1024]), 1024);
   /// ```
-  #[cfg_attr(not(tarpaulin), inline(always))]
+  #[cfg_attr(not(coverage), inline(always))]
   pub fn with_capacity_and_buffer(reader: R, capacity: usize) -> Self
   where
     B: Buffer,
@@ -217,7 +217,7 @@ impl<R, B> Peekable<R, B> {
     Self::construct(reader, B::with_capacity(capacity), Some(capacity))
   }
 
-  #[cfg_attr(not(tarpaulin), inline(always))]
+  #[cfg_attr(not(coverage), inline(always))]
   fn construct(reader: R, buffer: B, capacity: Option<usize>) -> Self
   where
     B: Buffer,
@@ -252,7 +252,7 @@ impl<R, B> Peekable<R, B> {
   /// assert_eq!(bytes, 2);
   /// assert_eq!(output, [3, 4]);
   /// ```
-  #[cfg_attr(not(tarpaulin), inline(always))]
+  #[cfg_attr(not(coverage), inline(always))]
   pub fn consume(&mut self) -> B
   where
     B: Buffer,
@@ -286,7 +286,7 @@ impl<R, B> Peekable<R, B> {
   /// assert_eq!(bytes, 2);
   /// assert_eq!(output, [3, 4]);
   /// ```
-  #[cfg_attr(not(tarpaulin), inline(always))]
+  #[cfg_attr(not(coverage), inline(always))]
   pub fn consume_in_place(&mut self)
   where
     B: Buffer,
@@ -313,7 +313,7 @@ impl<R, B> Peekable<R, B> {
   /// let (peeked, reader) = peekable.get_mut();
   /// assert_eq!(peeked, [1, 2]);
   /// ```
-  #[cfg_attr(not(tarpaulin), inline(always))]
+  #[cfg_attr(not(coverage), inline(always))]
   pub fn get_mut(&mut self) -> (&[u8], &mut R)
   where
     B: AsRef<[u8]>,
@@ -340,7 +340,7 @@ impl<R, B> Peekable<R, B> {
   /// let (peeked, reader) = peekable.get_ref();
   /// assert_eq!(peeked, [1, 2]);
   /// ```
-  #[cfg_attr(not(tarpaulin), inline(always))]
+  #[cfg_attr(not(coverage), inline(always))]
   pub fn get_ref(&self) -> (&[u8], &R)
   where
     B: AsRef<[u8]>,
@@ -368,7 +368,7 @@ impl<R, B> Peekable<R, B> {
   ///
   /// assert_eq!(peeked.as_slice(), [1, 2].as_slice());
   /// ```
-  #[cfg_attr(not(tarpaulin), inline(always))]
+  #[cfg_attr(not(coverage), inline(always))]
   pub fn into_components(self) -> (B, R) {
     (self.buffer, self.reader)
   }
@@ -1000,7 +1000,7 @@ pub trait PeekExt: Read {
 
 impl<R: Read + ?Sized> PeekExt for R {}
 
-#[cfg_attr(not(tarpaulin), inline(always))]
+#[cfg_attr(not(coverage), inline(always))]
 fn invalid_utf8_io_error(e: core::str::Utf8Error) -> std::io::Error {
   std::io::Error::new(std::io::ErrorKind::InvalidData, e)
 }
@@ -1016,7 +1016,7 @@ fn invalid_utf8_io_error(e: core::str::Utf8Error) -> std::io::Error {
 /// is strictly greater than the final stream size will succeed; the
 /// pathological case — capacity exactly equal to stream size — still
 /// fails, because detecting EOF requires reading one more byte.
-#[cfg_attr(not(tarpaulin), inline)]
+#[cfg_attr(not(coverage), inline)]
 pub(crate) fn grow_peek_buffer<B: Buffer>(buffer: &mut B) -> std::io::Result<usize> {
   let old_len = buffer.len();
   let mut growth = READ_CHUNK;
