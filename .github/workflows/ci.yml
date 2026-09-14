@@ -162,7 +162,7 @@ jobs:
         # Cobertura report.
         uses: taiki-e/install-action@v2
         with:
-          tool: cargo-llvm-cov@0.8.7
+          tool: cargo-llvm-cov@0.8
       - name: Cache cargo registry
         # Intentionally do NOT cache `target/`. cargo-llvm-cov manages its
         # instrumented artifacts separately from normal build artifacts.
