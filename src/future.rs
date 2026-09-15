@@ -219,10 +219,8 @@ impl<R: AsyncBufRead, B: Buffer> AsyncBufRead for AsyncPeekable<R, B> {
     let this = self.project();
     let buffer_len = this.buffer.len();
     if buffer_len > 0 {
-      // yield internal buffer if its not empty
       Poll::Ready(Ok(this.buffer.as_slice()))
     } else {
-      // otherwise forward to inner AsyncBufRead instance
       this.reader.poll_fill_buf(cx)
     }
   }
