@@ -18,7 +18,7 @@ use std::{
   task::{Context, Poll},
 };
 
-use futures::io::{AsyncReadExt, IoSliceMut};
+use futures::io::{AsyncBufReadExt, AsyncReadExt, IoSliceMut};
 use futures_util::{AsyncRead, AsyncWrite};
 use peekable::future::{AsyncPeek, AsyncPeekExt, AsyncPeekable};
 
@@ -278,6 +278,47 @@ fn peek_into_zero_length_buffer() {
     let mut p = Cursor::new(b"abc".to_vec()).peekable();
     let mut buf = [];
     let _ = p.peek(&mut buf).await.unwrap();
+  });
+}
+
+#[test]
+fn async_buf_read_fill_buf_returns_peek_buffer_then_inner_suffix() {
+  futures::executor::block_on(async {
+    let mut p: AsyncPeekable<_, Vec<u8>> =
+      AsyncPeekable::with_capacity_and_buffer(Cursor::new(b"outer-inner".to_vec()), 5);
+    assert_eq!(p.fill_buf().await.unwrap(), b"outer-inner");
+
+    let mut peeked = [0u8; 5];
+    assert_eq!(p.peek(&mut peeked).await.unwrap(), 5);
+    assert_eq!(&peeked, b"outer");
+    assert_eq!(p.fill_buf().await.unwrap(), b"outer");
+    p.consume_unpin(2);
+    assert_eq!(p.fill_buf().await.unwrap(), b"ter");
+    p.consume_unpin(3);
+    assert_eq!(p.fill_buf().await.unwrap(), b"-inner");
+  });
+}
+
+#[test]
+fn async_buf_read_read_until_crosses_peek_buffer_boundary() {
+  futures::executor::block_on(async {
+    let mut p = Cursor::new(b"outer|inner|tail".to_vec()).peekable();
+    let mut peeked = [0u8; 5];
+    assert_eq!(p.peek(&mut peeked).await.unwrap(), 5);
+    assert_eq!(&peeked, b"outer");
+
+    let expected_records: [&[u8]; 3] = [b"outer|", b"inner|", b"tail"];
+    let mut record = Vec::new();
+    for expected in expected_records {
+      assert_eq!(
+        p.read_until(b'|', &mut record).await.unwrap(),
+        expected.len()
+      );
+      assert_eq!(record, expected);
+      record.clear();
+    }
+    assert_eq!(p.read_until(b'|', &mut record).await.unwrap(), 0);
+    assert!(record.is_empty());
   });
 }
 

@@ -2,6 +2,17 @@
 
 ## UNRELEASED
 
+### 0.6.2
+
+#### Added
+
+- `Peekable` now implements `std::io::BufRead` when its inner reader
+  implements `BufRead`.
+- The `future` and `tokio` variants of `AsyncPeekable` now implement
+  their respective `AsyncBufRead` traits. All three implementations
+  serve peeked bytes first, then delegate to the inner reader after
+  the peek buffer is consumed.
+
 ### 0.6.1
 
 #### Fixed (correctness)

@@ -1,6 +1,6 @@
 [package]
 name = "peekable"
-version = "0.6.1"
+version = "0.6.2"
 edition = "2021"
 repository = "https://github.com/al8n/peekable"
 homepage = "https://github.com/al8n/peekable"
@@ -50,8 +50,10 @@ name = "smol"
 path = "examples/smol.rs"
 required-features = ["future"]
 
+[lints]
+workspace = true
 
-[lints.rust]
+[workspace.lints.rust]
 rust_2018_idioms = "warn"
 single_use_lifetimes = "warn"
 unexpected_cfgs = { level = "warn", check-cfg = [
