@@ -6,7 +6,7 @@
 //!   zero-bytes from a transient `resize`.
 
 use std::{
-  io::{self, Cursor, ErrorKind, Read},
+  io::{self, BufRead, Cursor, ErrorKind, Read},
   sync::{
     atomic::{AtomicUsize, Ordering},
     Arc,
@@ -277,6 +277,41 @@ fn read_after_peek_partial() {
   let n = p.read(&mut buf).unwrap();
   assert_eq!(n, 4);
   assert_eq!(&buf, b"cdef");
+}
+
+#[test]
+fn buf_read_fill_buf_returns_peek_buffer_then_inner_suffix() {
+  let mut p: peekable::Peekable<_, Vec<u8>> =
+    peekable::Peekable::with_capacity_and_buffer(Cursor::new(b"outer-inner".to_vec()), 5);
+  assert_eq!(BufRead::fill_buf(&mut p).unwrap(), b"outer-inner");
+
+  let mut peeked = [0u8; 5];
+  assert_eq!(p.peek(&mut peeked).unwrap(), 5);
+  assert_eq!(&peeked, b"outer");
+
+  assert_eq!(BufRead::fill_buf(&mut p).unwrap(), b"outer");
+  BufRead::consume(&mut p, 2);
+  assert_eq!(BufRead::fill_buf(&mut p).unwrap(), b"ter");
+  BufRead::consume(&mut p, 3);
+  assert_eq!(BufRead::fill_buf(&mut p).unwrap(), b"-inner");
+}
+
+#[test]
+fn buf_read_read_until_crosses_peek_buffer_boundary() {
+  let mut p = Cursor::new(b"outer|inner|tail".to_vec()).peekable();
+  let mut peeked = [0u8; 5];
+  assert_eq!(p.peek(&mut peeked).unwrap(), 5);
+  assert_eq!(&peeked, b"outer");
+
+  let expected_records: [&[u8]; 3] = [b"outer|", b"inner|", b"tail"];
+  let mut record = Vec::new();
+  for expected in expected_records {
+    assert_eq!(p.read_until(b'|', &mut record).unwrap(), expected.len());
+    assert_eq!(record, expected);
+    record.clear();
+  }
+  assert_eq!(p.read_until(b'|', &mut record).unwrap(), 0);
+  assert!(record.is_empty());
 }
 
 // ------------------------------------------------------------------
